@@ -110,14 +110,90 @@ function getProcessGoneMetricDetails(): CrashReportDetails {
   }
 }
 
-export function buildProcessGoneCrashDetails(details: Record<string, unknown>): CrashReportDetails {
+// ─── Pre-gone metric sampling ───────────────────────────────────────
+// Why: process-gone fires after the crashed process left Chromium's registry,
+// so gone-time getAppMetrics() only sees survivors — field reports carried
+// processMetricsRendererCount=0 for every renderer death. A periodic sample
+// keeps the last pre-death working sets so the crasher's size survives it.
+
+export const PROCESS_METRICS_PRE_GONE_SAMPLE_INTERVAL_MS = 60_000
+
+type PreGoneProcessMetricsSample = {
+  details: CrashReportDetails
+  sampledAtMs: number
+}
+
+let preGoneSample: PreGoneProcessMetricsSample | null = null
+let preGoneSampleTimer: ReturnType<typeof setInterval> | null = null
+
+export function samplePreGoneProcessMetrics(nowMs: number = Date.now()): void {
+  try {
+    preGoneSample = {
+      details: collectProcessGoneMetricDetails(app.getAppMetrics()),
+      sampledAtMs: nowMs
+    }
+  } catch {
+    // Why: a failed sweep must not erase the previous good sample.
+  }
+}
+
+export function startPreGoneProcessMetricsSampling(
+  intervalMs: number = PROCESS_METRICS_PRE_GONE_SAMPLE_INTERVAL_MS
+): void {
+  if (preGoneSampleTimer) {
+    return
+  }
+  samplePreGoneProcessMetrics()
+  preGoneSampleTimer = setInterval(() => samplePreGoneProcessMetrics(), intervalMs)
+  preGoneSampleTimer.unref?.()
+}
+
+export function resetPreGoneProcessMetricsSamplingForTest(): void {
+  if (preGoneSampleTimer) {
+    clearInterval(preGoneSampleTimer)
+  }
+  preGoneSampleTimer = null
+  preGoneSample = null
+}
+
+const PROCESS_METRICS_KEY_PREFIX = 'processMetrics'
+
+function preGoneSampleDetails(
+  sample: PreGoneProcessMetricsSample,
+  nowMs: number
+): CrashReportDetails {
+  const details: CrashReportDetails = {
+    processMetricsPreGoneSampleAgeMs: Math.max(0, nowMs - sample.sampledAtMs)
+  }
+  for (const [key, value] of Object.entries(sample.details)) {
+    details[`${PROCESS_METRICS_KEY_PREFIX}PreGone${key.slice(PROCESS_METRICS_KEY_PREFIX.length)}`] =
+      value
+  }
+  return details
+}
+
+export function buildProcessGoneCrashDetails(
+  details: Record<string, unknown>,
+  crashedProcessType: string
+): CrashReportDetails {
   const sanitizedDetails = sanitizeCrashReportDetails(details)
   // Why: low-JS-heap renderer kills can still be native/process memory pressure.
   // Capture Electron process buckets at process-gone time before recovery reloads.
-  return {
+  const liveMetricDetails = getProcessGoneMetricDetails()
+  const crashDetails: CrashReportDetails = {
     ...sanitizedDetails,
-    ...getProcessGoneMetricDetails()
+    ...liveMetricDetails
   }
+  // Why: with the crasher gone, Largest names a survivor — flag that so the
+  // live buckets are read as "everyone else", not as the crashed process.
+  const crashedBucketCountKey = `${PROCESS_METRICS_KEY_PREFIX}${titleCaseBucket(metricTypeBucket(crashedProcessType))}Count`
+  if (liveMetricDetails[crashedBucketCountKey] === 0) {
+    crashDetails.processMetricsCrashedProcessAbsent = true
+  }
+  if (preGoneSample) {
+    Object.assign(crashDetails, preGoneSampleDetails(preGoneSample, Date.now()))
+  }
+  return crashDetails
 }
 
 export function buildSuppressedProcessGoneBreadcrumbData({

@@ -121,10 +121,13 @@ export function recordProcessGoneCrash(
     return
   }
   const mainProcessLifecycle = getMainProcessLifecycleIdentity()
-  const crashDetails = buildProcessGoneCrashDetails({
-    ...event.details,
-    ...mainProcessLifecycle
-  })
+  const crashDetails = buildProcessGoneCrashDetails(
+    {
+      ...event.details,
+      ...mainProcessLifecycle
+    },
+    event.processType
+  )
   const breadcrumbs = getCrashBreadcrumbSnapshot()
   const span = startSpan('electron.process_gone', {
     attributes: {
