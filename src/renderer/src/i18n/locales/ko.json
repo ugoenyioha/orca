@@ -12464,7 +12464,10 @@
           "RecoverableRenderErrorBoundary": {
             "55001880db": "다시 시도",
             "34a189ae0f": "앱의 나머지 부분은 아직 실행 중입니다. 이 표면을 다시 시도하거나 다른 곳으로 전환했다가 다시 돌아오세요.",
-            "ab855c11f4": "Orca의 이 부분에 오류가 발생했습니다."
+            "ab855c11f4": "Orca의 이 부분에 오류가 발생했습니다.",
+            "restartOrca": "Orca 재시작",
+            "staleChunkDescription": "백그라운드에서 Orca가 업데이트되었을 수 있습니다. 다시 시도하거나 Orca를 재시작하여 업데이트 적용을 완료하세요.",
+            "staleChunkTitle": "Orca의 이 부분을 불러오지 못했습니다."
           }
         }
       },

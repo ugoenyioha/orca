@@ -12464,7 +12464,10 @@
           "RecoverableRenderErrorBoundary": {
             "55001880db": "Reintentar",
             "34a189ae0f": "El resto de la app sigue ejecutándose. Reintenta esta vista o cambia a otra y vuelve.",
-            "ab855c11f4": "Esta parte de Orca encontró un error."
+            "ab855c11f4": "Esta parte de Orca encontró un error.",
+            "restartOrca": "Reiniciar Orca",
+            "staleChunkDescription": "Es posible que Orca se haya actualizado en segundo plano. Reintenta, o reinicia Orca para terminar de aplicar la actualización.",
+            "staleChunkTitle": "No se pudo cargar esta parte de Orca."
           }
         }
       },

@@ -12464,7 +12464,10 @@
           "RecoverableRenderErrorBoundary": {
             "55001880db": "再試行",
             "34a189ae0f": "アプリの残りの部分はまだ実行されています。このサーフェスを再試行するか、切り替えて戻ってきてください。",
-            "ab855c11f4": "Orca のこの部分でエラーが発生しました。"
+            "ab855c11f4": "Orca のこの部分でエラーが発生しました。",
+            "restartOrca": "Orca を再起動",
+            "staleChunkDescription": "バックグラウンドで Orca が更新された可能性があります。再試行するか、Orca を再起動して更新の適用を完了してください。",
+            "staleChunkTitle": "Orca のこの部分を読み込めませんでした。"
           }
         }
       },

@@ -2,7 +2,7 @@ import React from 'react'
 import { AlertTriangle, RotateCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { isLazyChunkLoadError } from '@/lib/lazy-with-retry'
+import { advanceLazyChunkRetryEpoch, isLazyChunkLoadError } from '@/lib/lazy-with-retry'
 import { reportReactErrorBoundaryCrash } from '@/lib/react-error-boundary-reporting'
 import type { ReactErrorBoundaryReportArgs } from '../../../../shared/crash-reporting'
 import { translate } from '@/i18n/i18n'
@@ -28,10 +28,11 @@ type Props = {
 type State = {
   error: Error | null
   resetKey: Props['resetKey']
+  relaunching: boolean
 }
 
 export class RecoverableRenderErrorBoundary extends React.Component<Props, State> {
-  state: State = { error: null, resetKey: this.props.resetKey }
+  state: State = { error: null, resetKey: this.props.resetKey, relaunching: false }
 
   static getDerivedStateFromProps(props: Props, state: State): Partial<State> | null {
     if (props.resetKey !== state.resetKey) {
@@ -46,6 +47,10 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
     console.error(`[${this.props.boundaryId}] render crash contained by boundary`, error, errorInfo)
+    if (isLazyChunkLoadError(error)) {
+      // Why: lets the next reset (Retry or resetKey) mint a lazy that can load again.
+      advanceLazyChunkRetryEpoch()
+    }
     if (this.props.reportAsCrash === false) {
       return
     }
@@ -65,6 +70,15 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
     this.setState({ error: null })
   }
 
+  handleRelaunchApp = (): void => {
+    this.setState({ relaunching: true })
+    void window.api.app.relaunch().catch((error: unknown) => {
+      // Why: a refused pre-relaunch checkpoint keeps the app open; re-enable the button.
+      console.error(`[${this.props.boundaryId}] app relaunch failed`, error)
+      this.setState({ relaunching: false })
+    })
+  }
+
   render(): React.ReactNode {
     if (!this.state.error) {
       return this.props.children
@@ -73,6 +87,11 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
     if (this.props.fallback) {
       return this.props.fallback({ error: this.state.error, reset: this.handleReset })
     }
+
+    // A contained chunk failure usually means the app updated under this renderer;
+    // a main-driven relaunch is the recovery that a swallowed in-place reload isn't.
+    const staleChunk = isLazyChunkLoadError(this.state.error)
+    const canRelaunch = staleChunk && typeof window.api?.app?.relaunch === 'function'
 
     return (
       <div
@@ -89,26 +108,52 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
         <div className="space-y-1">
           <div className="font-medium text-foreground">
             {this.props.title ??
-              translate(
-                'auto.components.error.boundaries.RecoverableRenderErrorBoundary.ab855c11f4',
-                'This part of Orca hit an error.'
-              )}
+              (staleChunk
+                ? translate(
+                    'auto.components.error.boundaries.RecoverableRenderErrorBoundary.staleChunkTitle',
+                    'This part of Orca could not load.'
+                  )
+                : translate(
+                    'auto.components.error.boundaries.RecoverableRenderErrorBoundary.ab855c11f4',
+                    'This part of Orca hit an error.'
+                  ))}
           </div>
           <div className="max-w-md text-xs">
             {this.props.description ??
-              translate(
-                'auto.components.error.boundaries.RecoverableRenderErrorBoundary.34a189ae0f',
-                'The rest of the app is still running. Retry this surface or switch away and come back.'
-              )}
+              (staleChunk
+                ? translate(
+                    'auto.components.error.boundaries.RecoverableRenderErrorBoundary.staleChunkDescription',
+                    'Orca may have updated in the background. Retry, or restart Orca to finish applying the update.'
+                  )
+                : translate(
+                    'auto.components.error.boundaries.RecoverableRenderErrorBoundary.34a189ae0f',
+                    'The rest of the app is still running. Retry this surface or switch away and come back.'
+                  ))}
           </div>
         </div>
-        <Button type="button" variant="outline" size="sm" onClick={this.handleReset}>
-          <RotateCw className="size-3.5" />
-          {translate(
-            'auto.components.error.boundaries.RecoverableRenderErrorBoundary.55001880db',
-            'Retry'
-          )}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={this.handleReset}>
+            <RotateCw className="size-3.5" />
+            {translate(
+              'auto.components.error.boundaries.RecoverableRenderErrorBoundary.55001880db',
+              'Retry'
+            )}
+          </Button>
+          {canRelaunch ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={this.state.relaunching}
+              onClick={this.handleRelaunchApp}
+            >
+              {translate(
+                'auto.components.error.boundaries.RecoverableRenderErrorBoundary.restartOrca',
+                'Restart Orca'
+              )}
+            </Button>
+          ) : null}
+        </div>
       </div>
     )
   }

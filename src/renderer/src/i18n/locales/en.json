@@ -13198,7 +13198,10 @@
           "RecoverableRenderErrorBoundary": {
             "55001880db": "Retry",
             "34a189ae0f": "The rest of the app is still running. Retry this surface or switch away and come back.",
-            "ab855c11f4": "This part of Orca hit an error."
+            "ab855c11f4": "This part of Orca hit an error.",
+            "restartOrca": "Restart Orca",
+            "staleChunkDescription": "Orca may have updated in the background. Retry, or restart Orca to finish applying the update.",
+            "staleChunkTitle": "This part of Orca could not load."
           }
         }
       },

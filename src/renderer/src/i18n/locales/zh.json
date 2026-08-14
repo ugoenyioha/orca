@@ -12484,7 +12484,10 @@
           "RecoverableRenderErrorBoundary": {
             "55001880db": "重试",
             "34a189ae0f": "应用程序的其余部分仍在运行。重试此表面或切换出去然后再回来。",
-            "ab855c11f4": "Orca 的这一部分遇到了错误。"
+            "ab855c11f4": "Orca 的这一部分遇到了错误。",
+            "restartOrca": "重启 Orca",
+            "staleChunkDescription": "Orca 可能已在后台完成更新。请重试，或重启 Orca 以完成更新。",
+            "staleChunkTitle": "无法加载 Orca 的这一部分。"
           }
         }
       },
