@@ -5,13 +5,14 @@ import {
   collectProcessGoneMetricDetails,
   resetPreGoneProcessMetricsSamplingForTest,
   samplePreGoneProcessMetrics,
+  setSystemMemoryInfoReaderForTest,
   startPreGoneProcessMetricsSampling
 } from './process-gone-diagnostics'
 
 type MetricFixture = {
   pid: number
   type: string
-  memory: { workingSetSize: number }
+  memory: { workingSetSize: number; peakWorkingSetSize?: number; privateBytes?: number }
 }
 
 const { appMetricsMock } = vi.hoisted(() => ({
@@ -27,6 +28,7 @@ vi.mock('electron', () => ({
 describe('process gone diagnostics', () => {
   beforeEach(() => {
     resetPreGoneProcessMetricsSamplingForTest()
+    setSystemMemoryInfoReaderForTest(null)
   })
 
   afterEach(() => {
@@ -140,6 +142,74 @@ describe('process gone diagnostics', () => {
       processMetricsPreGoneSampleAgeMs: 0,
       processMetricsPreGoneRendererWorkingSetMB: 900
     })
+  })
+
+  it('reports the renderer lifetime peak and private bytes when the metrics carry them', () => {
+    const details = collectProcessGoneMetricDetails([
+      {
+        pid: 10,
+        type: 'Browser',
+        memory: { workingSetSize: 1024 * 200, peakWorkingSetSize: 1024 * 900 }
+      },
+      {
+        pid: 11,
+        type: 'Tab',
+        memory: {
+          workingSetSize: 1024 * 800,
+          peakWorkingSetSize: 1024 * 4100,
+          privateBytes: 1024 * 3900
+        }
+      },
+      {
+        pid: 12,
+        type: 'Tab',
+        memory: { workingSetSize: 1024 * 300, peakWorkingSetSize: 1024 * 350 }
+      }
+    ])
+
+    // Max across renderers, never the Browser's; a spike between interval
+    // samples survives in the lifetime peak.
+    expect(details.processMetricsRendererPeakWorkingSetMB).toBe(4100)
+    expect(details.processMetricsRendererPrivateMB).toBe(3900)
+  })
+
+  it('carries the renderer peak through the pre-gone sample after a between-sample spike', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(500_000)
+    appMetricsMock.mockReturnValue([
+      {
+        pid: 40,
+        type: 'Tab',
+        memory: { workingSetSize: 1024 * 800, peakWorkingSetSize: 1024 * 4100 }
+      }
+    ])
+    samplePreGoneProcessMetrics()
+    appMetricsMock.mockReturnValue([{ pid: 1, type: 'Browser', memory: { workingSetSize: 0 } }])
+
+    expect(buildProcessGoneCrashDetails({}, 'renderer')).toMatchObject({
+      processMetricsPreGoneRendererWorkingSetMB: 800,
+      processMetricsPreGoneRendererPeakWorkingSetMB: 4100
+    })
+  })
+
+  it('samples system memory at gone time but never into the pre-gone snapshot', () => {
+    appMetricsMock.mockReturnValue([{ pid: 1, type: 'Browser', memory: { workingSetSize: 0 } }])
+    samplePreGoneProcessMetrics()
+    setSystemMemoryInfoReaderForTest(() => ({
+      total: 1024 * 16_384,
+      free: 1024 * 210,
+      swapTotal: 1024 * 8_192,
+      swapFree: 1024 * 40
+    }))
+
+    const details = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(details).toMatchObject({
+      systemMemoryTotalMB: 16_384,
+      systemMemoryFreeMB: 210,
+      systemMemorySwapTotalMB: 8_192,
+      systemMemorySwapFreeMB: 40
+    })
+    expect(details.processMetricsPreGoneSystemMemoryTotalMB).toBeUndefined()
   })
 
   it('leaves records unflagged when the crashed bucket is still populated', () => {

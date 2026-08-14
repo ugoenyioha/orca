@@ -11,6 +11,8 @@ type ProcessMetricLike = {
   type?: unknown
   memory?: {
     workingSetSize?: unknown
+    peakWorkingSetSize?: unknown
+    privateBytes?: unknown
   } | null
 }
 type CrashReportDetails = Record<string, CrashReportDetailValue>
@@ -54,6 +56,11 @@ function workingSetMB(metric: ProcessMetricLike): number {
   return Math.round(Math.max(0, workingSetKB) / 1024)
 }
 
+function memoryKBFieldMB(value: unknown): number | undefined {
+  const kb = safeFiniteNumber(value)
+  return kb === undefined ? undefined : Math.round(Math.max(0, kb) / 1024)
+}
+
 function emptyBuckets(): Record<ProcessMetricBucketName, ProcessMetricBucket> {
   return {
     browser: { count: 0, workingSetMB: 0 },
@@ -71,12 +78,28 @@ function titleCaseBucket(bucket: ProcessMetricBucketName): string {
 export function collectProcessGoneMetricDetails(metrics: ProcessMetricLike[]): CrashReportDetails {
   const buckets = emptyBuckets()
   let largest: { pid: number; type: string; workingSetMB: number } | null = null
+  // Why peak/private only for renderers: a spike between interval samples still
+  // shows in the lifetime peak, and private-vs-shared separates real commit
+  // from mapped memory — both matter for OOM triage, not for other buckets.
+  let rendererPeakWorkingSetMB: number | null = null
+  let rendererPrivateMB: number | null = null
 
   for (const metric of metrics) {
-    const bucket = buckets[metricTypeBucket(metric.type)]
+    const bucketName = metricTypeBucket(metric.type)
+    const bucket = buckets[bucketName]
     const metricWorkingSetMB = workingSetMB(metric)
     bucket.count += 1
     bucket.workingSetMB += metricWorkingSetMB
+    if (bucketName === 'renderer') {
+      const peakMB = memoryKBFieldMB(metric.memory?.peakWorkingSetSize)
+      if (peakMB !== undefined) {
+        rendererPeakWorkingSetMB = Math.max(rendererPeakWorkingSetMB ?? 0, peakMB)
+      }
+      const privateMB = memoryKBFieldMB(metric.memory?.privateBytes)
+      if (privateMB !== undefined) {
+        rendererPrivateMB = Math.max(rendererPrivateMB ?? 0, privateMB)
+      }
+    }
     const pid = safeFiniteNumber(metric.pid) ?? 0
     if (!largest || metricWorkingSetMB > largest.workingSetMB) {
       largest = {
@@ -93,6 +116,12 @@ export function collectProcessGoneMetricDetails(metrics: ProcessMetricLike[]): C
     details[`processMetrics${label}Count`] = buckets[bucketName].count
     details[`processMetrics${label}WorkingSetMB`] = buckets[bucketName].workingSetMB
   }
+  if (rendererPeakWorkingSetMB !== null) {
+    details.processMetricsRendererPeakWorkingSetMB = rendererPeakWorkingSetMB
+  }
+  if (rendererPrivateMB !== null) {
+    details.processMetricsRendererPrivateMB = rendererPrivateMB
+  }
   if (largest) {
     details.processMetricsLargestPid = largest.pid
     details.processMetricsLargestType = largest.type
@@ -108,6 +137,60 @@ function getProcessGoneMetricDetails(): CrashReportDetails {
     const errorName = error instanceof Error ? error.name : typeof error
     return { processMetricsError: errorName }
   }
+}
+
+// ─── System memory at gone time ─────────────────────────────────────
+// Why: the system outlives the crashed process, so this IS sampleable at
+// process-gone — it separates "renderer grew huge" from "machine out of
+// memory/commit", which the per-process buckets alone cannot.
+
+type SystemMemoryInfoLike = {
+  total?: unknown
+  free?: unknown
+  swapTotal?: unknown
+  swapFree?: unknown
+}
+
+type SystemMemoryInfoReader = () => SystemMemoryInfoLike | null
+
+function readElectronSystemMemoryInfo(): SystemMemoryInfoLike | null {
+  const read = (process as NodeJS.Process & { getSystemMemoryInfo?: () => SystemMemoryInfoLike })
+    .getSystemMemoryInfo
+  if (typeof read !== 'function') {
+    return null
+  }
+  try {
+    return read.call(process)
+  } catch {
+    return null
+  }
+}
+
+let systemMemoryInfoReader: SystemMemoryInfoReader = readElectronSystemMemoryInfo
+
+export function setSystemMemoryInfoReaderForTest(reader: SystemMemoryInfoReader | null): void {
+  systemMemoryInfoReader = reader ?? readElectronSystemMemoryInfo
+}
+
+function getSystemMemoryAtGoneDetails(): CrashReportDetails {
+  const info = systemMemoryInfoReader()
+  if (!info) {
+    return {}
+  }
+  const details: CrashReportDetails = {}
+  const fields: readonly [keyof SystemMemoryInfoLike, string][] = [
+    ['total', 'systemMemoryTotalMB'],
+    ['free', 'systemMemoryFreeMB'],
+    ['swapTotal', 'systemMemorySwapTotalMB'],
+    ['swapFree', 'systemMemorySwapFreeMB']
+  ]
+  for (const [field, key] of fields) {
+    const mb = memoryKBFieldMB(info[field])
+    if (mb !== undefined) {
+      details[key] = mb
+    }
+  }
+  return details
 }
 
 // ─── Pre-gone metric sampling ───────────────────────────────────────
@@ -182,7 +265,8 @@ export function buildProcessGoneCrashDetails(
   const liveMetricDetails = getProcessGoneMetricDetails()
   const crashDetails: CrashReportDetails = {
     ...sanitizedDetails,
-    ...liveMetricDetails
+    ...liveMetricDetails,
+    ...getSystemMemoryAtGoneDetails()
   }
   // Why: with the crasher gone, Largest names a survivor — flag that so the
   // live buckets are read as "everyone else", not as the crashed process.
