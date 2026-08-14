@@ -16,7 +16,18 @@ export function limitRemoteScanFilesystemConcurrency(
   return {
     readDir: (dirPath) => gate(() => provider.readDir(dirPath)),
     readFile: (filePath) => gate(() => provider.readFile(filePath)),
-    stat: (filePath) => gate(() => provider.stat(filePath))
+    stat: (filePath) => gate(() => provider.stat(filePath)),
+    ...(provider.scanCursorSidecars
+      ? {
+          scanCursorSidecars: (request, options) =>
+            gate(() => {
+              if (!provider.scanCursorSidecars) {
+                throw new Error('remote_cursor_sidecar_scan_unavailable')
+              }
+              return provider.scanCursorSidecars(request, options)
+            })
+        }
+      : {})
   }
 }
 

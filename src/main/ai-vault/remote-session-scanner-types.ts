@@ -2,7 +2,7 @@ import type { AiVaultAgent, AiVaultSession } from '../../shared/ai-vault-types'
 import type { ExecutionHostId } from '../../shared/execution-host'
 import type { IFilesystemProvider } from '../providers/types'
 import type { RemoteHostPlatform } from '../ssh/ssh-remote-platform'
-import type { FileWithMtime } from './session-scanner-types'
+import type { CursorCwdEvidence, CursorLayout, FileWithMtime } from './session-scanner-types'
 import type { SubagentTranscriptPartition } from './session-scanner-subagent-transcripts'
 import type { AntigravityWorkspaceResolver } from './session-scanner-antigravity-history'
 
@@ -18,7 +18,8 @@ export type RemoteScannerContext = {
 export type RemoteSessionFilesystemProvider = Pick<
   IFilesystemProvider,
   'readDir' | 'readFile' | 'stat'
->
+> &
+  Pick<IFilesystemProvider, 'scanCursorSidecars'>
 
 export type RemoteParserOptions = {
   executionHostId: ExecutionHostId
@@ -46,10 +47,14 @@ export type RemoteSessionSource = {
     content: string,
     context: RemoteScannerContext
   ) => Promise<AiVaultSession | null>
+  cursorLayout?: CursorLayout
+  cursorStorageContextKey?: string
 }
 
 export type RemoteSessionCandidate = {
   source: RemoteSessionSource
   file: FileWithMtime
   subagentTranscriptCount?: number
+  cursorCwdEvidence?: CursorCwdEvidence
+  cursorSidecarContent?: string
 }

@@ -1,4 +1,8 @@
 import type { SearchOptions, SearchResult } from '../../shared/code-search-types'
+import type {
+  CursorSidecarScanRequest,
+  CursorSidecarScanResponse
+} from '../../shared/cursor-sidecar-scan'
 import type { DirEntry, FsChangeEvent } from '../../shared/filesystem-entry-types'
 import type { WorkspaceSpaceDirectoryScanResult } from '../../shared/workspace-space-types'
 
@@ -62,6 +66,10 @@ export type IFilesystemProvider = {
     rootPath: string,
     options?: { signal?: AbortSignal }
   ): Promise<WorkspaceSpaceDirectoryScanResult>
+  scanCursorSidecars?(
+    request: CursorSidecarScanRequest,
+    options?: { signal?: AbortSignal }
+  ): Promise<CursorSidecarScanResponse>
   watch(
     rootPath: string,
     callback: (events: FsChangeEvent[]) => void,

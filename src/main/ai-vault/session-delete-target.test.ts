@@ -100,6 +100,22 @@ describe('validateAiVaultSessionDeleteTarget', () => {
     expect(result.allowed).toBe(true)
   })
 
+  it('allows a cursor sidecar meta.json by deleting its session directory', () => {
+    const chatsRoot = '/tmp/ai-vault-delete-cursor-chats'
+    const bucket = 'a'.repeat(32)
+    const result = validateAiVaultSessionDeleteTarget({
+      agent: 'cursor',
+      filePath: join(chatsRoot, bucket, 'session-1', 'meta.json'),
+      executionHostId: 'local',
+      rootOptions: { cursorChatsDir: chatsRoot, cursorProjectsDir: CURSOR_ROOT }
+    })
+    expect(result).toMatchObject({
+      allowed: true,
+      agent: 'cursor',
+      removals: [{ kind: 'directory', path: join(chatsRoot, bucket, 'session-1') }]
+    })
+  })
+
   it('rejects a hermes file whose basename is missing the session_ prefix', () => {
     const result = validateAiVaultSessionDeleteTarget({
       agent: 'hermes',
