@@ -143,12 +143,19 @@ function getProcessGoneMetricDetails(): CrashReportDetails {
 // Why: the system outlives the crashed process, so this IS sampleable at
 // process-gone — it separates "renderer grew huge" from "machine out of
 // memory/commit", which the per-process buckets alone cannot.
+// Platform honesty: swap* exist on Windows/Linux only. On macOS `free` is
+// near-meaningless (file cache and compression keep it low on healthy
+// machines); fileBacked/purgeable are the only reclaimability proxy this API
+// gives there, and none of these fields answers "was the machine under
+// pressure" on macOS — that needs a signal Electron does not expose.
 
 type SystemMemoryInfoLike = {
   total?: unknown
   free?: unknown
   swapTotal?: unknown
   swapFree?: unknown
+  fileBacked?: unknown
+  purgeable?: unknown
 }
 
 type SystemMemoryInfoReader = () => SystemMemoryInfoLike | null
@@ -182,7 +189,9 @@ function getSystemMemoryAtGoneDetails(): CrashReportDetails {
     ['total', 'systemMemoryTotalMB'],
     ['free', 'systemMemoryFreeMB'],
     ['swapTotal', 'systemMemorySwapTotalMB'],
-    ['swapFree', 'systemMemorySwapFreeMB']
+    ['swapFree', 'systemMemorySwapFreeMB'],
+    ['fileBacked', 'systemMemoryFileBackedMB'],
+    ['purgeable', 'systemMemoryPurgeableMB']
   ]
   for (const [field, key] of fields) {
     const mb = memoryKBFieldMB(info[field])

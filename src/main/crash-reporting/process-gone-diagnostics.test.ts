@@ -192,6 +192,57 @@ describe('process gone diagnostics', () => {
     })
   })
 
+  it('keeps plain-prefix peak/private live-only while PreGone carries the cached values', () => {
+    // Era invariant: plain prefix = sampled at gone time (survivors), PreGone
+    // prefix = cached pre-death sample. Neither may leak into the other.
+    appMetricsMock.mockReturnValue([
+      {
+        pid: 50,
+        type: 'Tab',
+        memory: {
+          workingSetSize: 1024 * 3000,
+          peakWorkingSetSize: 1024 * 3300,
+          privateBytes: 1024 * 2900
+        }
+      }
+    ])
+    samplePreGoneProcessMetrics()
+    appMetricsMock.mockReturnValue([
+      {
+        pid: 51,
+        type: 'Tab',
+        memory: { workingSetSize: 1024 * 90, peakWorkingSetSize: 1024 * 120 }
+      }
+    ])
+
+    const details = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(details.processMetricsRendererPeakWorkingSetMB).toBe(120)
+    expect(details.processMetricsRendererPrivateMB).toBeUndefined()
+    expect(details.processMetricsPreGoneRendererPeakWorkingSetMB).toBe(3300)
+    expect(details.processMetricsPreGoneRendererPrivateMB).toBe(2900)
+  })
+
+  it('reports macOS-shaped system memory and omits the fields macOS lacks', () => {
+    // macOS getSystemMemoryInfo() has no swap fields; fileBacked/purgeable are
+    // its only reclaimability proxy. Verified on Electron 43.1.0.
+    setSystemMemoryInfoReaderForTest(() => ({
+      total: 1024 * 65_536,
+      free: 1024 * 59,
+      fileBacked: 1024 * 21_000,
+      purgeable: 1024 * 1_800
+    }))
+
+    const details = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(details).toMatchObject({
+      systemMemoryTotalMB: 65_536,
+      systemMemoryFreeMB: 59,
+      systemMemoryFileBackedMB: 21_000,
+      systemMemoryPurgeableMB: 1_800
+    })
+    expect(details.systemMemorySwapTotalMB).toBeUndefined()
+    expect(details.systemMemorySwapFreeMB).toBeUndefined()
+  })
+
   it('samples system memory at gone time but never into the pre-gone snapshot', () => {
     appMetricsMock.mockReturnValue([{ pid: 1, type: 'Browser', memory: { workingSetSize: 0 } }])
     samplePreGoneProcessMetrics()
