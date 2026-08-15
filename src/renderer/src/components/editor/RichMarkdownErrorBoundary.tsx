@@ -2,6 +2,8 @@ import React from 'react'
 import { recordRendererCrashBreadcrumb } from '@/lib/crash-breadcrumb-recorder'
 import { advanceLazyChunkRetryEpoch, isLazyChunkLoadError } from '@/lib/lazy-with-retry'
 import { reportReactErrorBoundaryCrash } from '@/lib/react-error-boundary-reporting'
+import { isAppRelaunchCapable } from '@/components/error-boundaries/app-relaunch-capability'
+import { StaleChunkRecoveryActions } from '@/components/error-boundaries/StaleChunkRecoveryActions'
 import { translate } from '@/i18n/i18n'
 
 type Props = {
@@ -83,6 +85,34 @@ export class RichMarkdownErrorBoundary extends React.Component<Props, State> {
 
   render(): React.ReactNode {
     if (this.state.error) {
+      // Stale chunks after a background update: Retry alone re-fetches dead
+      // assets forever, so lead with the main-driven restart (same row as
+      // RecoverableRenderErrorBoundary) whenever the host can relaunch.
+      const canRelaunch = isLazyChunkLoadError(this.state.error) && isAppRelaunchCapable()
+      if (canRelaunch) {
+        return (
+          <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 px-6 text-center text-sm text-muted-foreground">
+            <div>
+              {translate(
+                'auto.components.error.boundaries.RecoverableRenderErrorBoundary.staleChunkTitle',
+                'This part of Orca could not load.'
+              )}
+            </div>
+            <div className="max-w-md text-xs opacity-70">
+              {translate(
+                'auto.components.error.boundaries.RecoverableRenderErrorBoundary.staleChunkDescription',
+                'Orca may have updated in the background. Restart Orca to finish applying the update, or retry this part.'
+              )}
+            </div>
+            {/* Catching an error rebuilds this subtree, so the row remounts fresh
+                per error — no stalled-notice leak (pinned by the leak test). */}
+            <StaleChunkRecoveryActions
+              boundaryId="editor.rich-markdown"
+              onRetry={this.handleReset}
+            />
+          </div>
+        )
+      }
       return (
         <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 px-6 text-center text-sm text-muted-foreground">
           <div>

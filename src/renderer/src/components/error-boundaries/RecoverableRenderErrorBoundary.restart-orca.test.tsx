@@ -13,10 +13,8 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LazyChunkLoadError } from '@/lib/lazy-with-retry'
-import {
-  RecoverableRenderErrorBoundary,
-  RELAUNCH_SETTLE_GRACE_MS
-} from './RecoverableRenderErrorBoundary'
+import { RecoverableRenderErrorBoundary } from './RecoverableRenderErrorBoundary'
+import { RELAUNCH_SETTLE_GRACE_MS } from './StaleChunkRecoveryActions'
 
 const reportCrashMock = vi.hoisted(() => vi.fn())
 
@@ -206,6 +204,12 @@ describe('RecoverableRenderErrorBoundary Restart Orca button', () => {
     renderWith('doc-b', new Error('ordinary render failure'))
     expect(container!.querySelector('[role="alert"]')).not.toBeNull()
     expect(findRestartButton(container!)).toBeNull()
+    expect(container!.textContent).not.toContain("Restarting didn't complete.")
+
+    // A later stale error renders the row again — remounted fresh, not with the
+    // doc-a row's stalled/disabled state (catching an error rebuilds the subtree).
+    renderWith('doc-c', new LazyChunkLoadError(new SyntaxError("Unexpected token ']'")))
+    expect(findRestartButton(container!)?.disabled).toBe(false)
     expect(container!.textContent).not.toContain("Restarting didn't complete.")
   })
 
