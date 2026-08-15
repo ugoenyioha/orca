@@ -282,9 +282,19 @@ export function registerAppHandlers(store: Store, options: RegisterAppHandlersOp
     }
   })
 
+  // Every app.relaunch() registration starts another replacement instance after
+  // exit, and renderer-side click guards cannot see each other across surfaces
+  // (error-boundary Restart, hydration toast, settings panes). Once the exit
+  // pair is scheduled the process is committed, so later invokes must not
+  // schedule a second one.
+  let relaunchExitScheduled = false
   ipcMain.handle('app:relaunch', async () => {
     // Why: brief delay lets the renderer paint "Restarting…" before the window tears down.
     await runBeforeRelaunchCleanup(options.onBeforeRelaunch)
+    if (relaunchExitScheduled) {
+      return
+    }
+    relaunchExitScheduled = true
     setTimeout(() => {
       // Why: app.exit(0) skips before-quit, so destroy the Windows tray manually to avoid a stale icon.
       destroySystemTray()

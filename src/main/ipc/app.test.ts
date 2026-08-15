@@ -220,6 +220,23 @@ describe('registerAppHandlers', () => {
     expect(appExitMock).toHaveBeenCalledWith(0)
   })
 
+  it('schedules a single relaunch exit no matter how many surfaces invoke it', async () => {
+    registerAppHandlers({} as never, {})
+
+    // Two surfaces (error-boundary Restart, hydration toast) can race a relaunch;
+    // each app.relaunch() registration would start another replacement instance.
+    const first = Promise.resolve(handlers.get('app:relaunch')?.(null))
+    const second = Promise.resolve(handlers.get('app:relaunch')?.(null))
+    await first
+    await second
+    const third = Promise.resolve(handlers.get('app:relaunch')?.(null))
+    await third
+    await vi.advanceTimersByTimeAsync(150)
+
+    expect(relaunchAppMock).toHaveBeenCalledTimes(1)
+    expect(appExitMock).toHaveBeenCalledTimes(1)
+  })
+
   it('marks restart as expected shutdown before quitting through the normal pipeline', async () => {
     const onBeforeRelaunch = vi.fn()
     registerAppHandlers({} as never, { onBeforeRelaunch })
