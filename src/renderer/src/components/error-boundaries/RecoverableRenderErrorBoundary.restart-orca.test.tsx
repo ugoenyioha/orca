@@ -205,7 +205,9 @@ describe('RecoverableRenderErrorBoundary Restart Orca button', () => {
     root = null
     container?.remove()
 
-    // Paired-web/browser fallback shape: no app bridge at all.
+    // Degraded/partial preload shape with no app bridge. (The real browser
+    // fallback DOES expose app.relaunch as an in-place reload — that host is
+    // covered by the settle-grace tests above, not by hiding the button.)
     delete (window as unknown as { api?: unknown }).api
     renderBoundaryWith(new LazyChunkLoadError(new SyntaxError("Unexpected token '}'")))
     expect(container!.querySelector('[role="alert"]')).not.toBeNull()
