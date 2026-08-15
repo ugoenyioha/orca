@@ -16,6 +16,11 @@ const MAX_COALESCE_KEYS = 128
 type CoalescedBreadcrumbState = {
   recordedAt: number
   suppressed: number
+  /** Count the crumb was emitted claiming (the previous window's repeats). */
+  carried: number
+  /** Of `suppressed`, how many a resolve already folded into the crumb, so a
+   *  later emit never claims the same repeats a snapshot attributed. */
+  resolved: number
   /** Ring entry this key owns, refreshed in place while suppressing. */
   emitted?: CrashReportBreadcrumb
   /** Newest suppressed payload, sanitized only if a snapshot actually asks for it. */
@@ -123,7 +128,16 @@ export function recordCoalescedCrashBreadcrumb({
     }
   }
   coalescedBreadcrumbs.delete(coalesceKey)
-  const state: CoalescedBreadcrumbState = { recordedAt: now, suppressed: 0 }
+  // Claim only repeats no resolve has already folded into the previous crumb —
+  // a snapshot mid-window attributes them there, and forensic totals must not
+  // count one burst twice.
+  const suppressedSinceLast = previous ? previous.suppressed - previous.resolved : 0
+  const state: CoalescedBreadcrumbState = {
+    recordedAt: now,
+    suppressed: 0,
+    carried: suppressedSinceLast,
+    resolved: 0
+  }
   coalescedBreadcrumbs.set(coalesceKey, state)
   while (coalescedBreadcrumbs.size > MAX_COALESCE_KEYS) {
     const oldest = coalescedBreadcrumbs.entries().next()
@@ -133,7 +147,6 @@ export function recordCoalescedCrashBreadcrumb({
     resolvePendingCoalescedBreadcrumb(oldest.value[1])
     coalescedBreadcrumbs.delete(oldest.value[0])
   }
-  const suppressedSinceLast = previous?.suppressed ?? 0
   state.emitted = recordCrashBreadcrumb(
     name,
     suppressedSinceLast > 0 ? { ...data, suppressedSinceLast } : data
@@ -141,15 +154,47 @@ export function recordCoalescedCrashBreadcrumb({
   return { suppressedSinceLast }
 }
 
+/** Whether any future snapshot can still include this crumb. The ring only
+ *  appends and the retained map only grows toward its cap, so an entry pushed
+ *  past the snapshot budget is invisible forever, not just for now. */
+function isCoalescedCrumbStillInEvidence(crumb: CrashReportBreadcrumb): boolean {
+  const visibleFrom = breadcrumbs.length - (MAX_BREADCRUMBS - retainedBreadcrumbs.size)
+  const index = breadcrumbs.indexOf(crumb)
+  if (index !== -1 && index >= visibleFrom) {
+    return true
+  }
+  for (const retained of retainedBreadcrumbs.values()) {
+    if (retained === crumb) {
+      return true
+    }
+  }
+  return false
+}
+
 /** Fold a key's newest suppressed payload into the ring entry it owns. */
 function resolvePendingCoalescedBreadcrumb(state: CoalescedBreadcrumbState): void {
   if (!state.pending || !state.emitted) {
     return
   }
+  // Eviction can orphan the crumb mid-window; folding into it would mark the
+  // repeats resolved into evidence no snapshot can see, and the next emit would
+  // then claim nothing — the burst vanishes from the record entirely. Drop the
+  // handle (keeping `resolved` for folds that landed while it was live) so the
+  // next emit claims the unclaimed repeats instead.
+  if (!isCoalescedCrumbStillInEvidence(state.emitted)) {
+    state.emitted = undefined
+    state.pending = undefined
+    return
+  }
+  // The crumb's claim is a running total: what it was born claiming plus every
+  // repeat folded since. Dropping `carried` would erase the previous window's
+  // count from the record; omitting `resolved` bookkeeping would let the next
+  // emit claim these repeats a second time.
   state.emitted.data = sanitizeCrashReportDetails({
     ...state.pending,
-    suppressedSinceLast: state.suppressed
+    suppressedSinceLast: state.carried + state.suppressed
   })
+  state.resolved = state.suppressed
   state.pending = undefined
 }
 
