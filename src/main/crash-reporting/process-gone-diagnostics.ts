@@ -129,23 +129,25 @@ export function collectProcessGoneMetricDetails(metrics: ProcessMetricLike[]): C
 type LiveProcessGoneMetrics = {
   details: CrashReportDetails
   // null = metrics unreadable, so pid-level absence cannot be proven.
-  pids: Set<number> | null
+  // Bucket per pid, not a bare pid set: a recycled pid living on as a
+  // different process type must still read as a vanished sampled process.
+  pidBuckets: Map<number, ProcessMetricBucketName> | null
 }
 
 function getLiveProcessGoneMetrics(): LiveProcessGoneMetrics {
   try {
     const metrics = app.getAppMetrics()
-    const pids = new Set<number>()
+    const pidBuckets = new Map<number, ProcessMetricBucketName>()
     for (const metric of metrics) {
       const pid = safeFiniteNumber(metric.pid)
       if (pid !== undefined) {
-        pids.add(pid)
+        pidBuckets.set(pid, metricTypeBucket(metric.type))
       }
     }
-    return { details: collectProcessGoneMetricDetails(metrics), pids }
+    return { details: collectProcessGoneMetricDetails(metrics), pidBuckets }
   } catch (error) {
     const errorName = error instanceof Error ? error.name : typeof error
-    return { details: { processMetricsError: errorName }, pids: null }
+    return { details: { processMetricsError: errorName }, pidBuckets: null }
   }
 }
 
@@ -171,6 +173,10 @@ type PreGoneProcessMetricsSample = {
 
 let preGoneSample: PreGoneProcessMetricsSample | null = null
 let preGoneSampleTimer: ReturnType<typeof setInterval> | null = null
+// Why: a pid reported as Vanished once must not be re-attributed to a later
+// crash — a crash-looped respawn dying before the next sweep would otherwise
+// confidently inherit the previous crasher's pid and working set.
+const attributedVanishedPids = new Set<number>()
 
 function sampledProcessIdentities(metrics: ProcessMetricLike[]): PreGoneSampledProcess[] {
   const processes: PreGoneSampledProcess[] = []
@@ -196,6 +202,8 @@ export function samplePreGoneProcessMetrics(nowMs: number = Date.now()): void {
       processes: sampledProcessIdentities(metrics),
       sampledAtMs: nowMs
     }
+    // Fresh identities: attribution state belongs to the sample it came from.
+    attributedVanishedPids.clear()
   } catch {
     // Why: a failed sweep must not erase the previous good sample.
   }
@@ -218,6 +226,7 @@ export function resetPreGoneProcessMetricsSamplingForTest(): void {
   }
   preGoneSampleTimer = null
   preGoneSample = null
+  attributedVanishedPids.clear()
 }
 
 const PROCESS_METRICS_KEY_PREFIX = 'processMetrics'
@@ -243,7 +252,7 @@ export function buildProcessGoneCrashDetails(
   const sanitizedDetails = sanitizeCrashReportDetails(details)
   // Why: low-JS-heap renderer kills can still be native/process memory pressure.
   // Capture Electron process buckets at process-gone time before recovery reloads.
-  const { details: liveMetricDetails, pids: livePids } = getLiveProcessGoneMetrics()
+  const { details: liveMetricDetails, pidBuckets: livePidBuckets } = getLiveProcessGoneMetrics()
   const crashDetails: CrashReportDetails = {
     ...sanitizedDetails,
     ...liveMetricDetails,
@@ -260,8 +269,13 @@ export function buildProcessGoneCrashDetails(
   const crashedBucket = metricTypeBucket(crashedProcessType)
   const crashedBucketCountKey = `${PROCESS_METRICS_KEY_PREFIX}${titleCaseBucket(crashedBucket)}Count`
   const vanished =
-    livePids && preGoneSample
-      ? preGoneSample.processes.filter((p) => p.bucket === crashedBucket && !livePids.has(p.pid))
+    livePidBuckets && preGoneSample
+      ? preGoneSample.processes.filter(
+          (p) =>
+            p.bucket === crashedBucket &&
+            !attributedVanishedPids.has(p.pid) &&
+            livePidBuckets.get(p.pid) !== p.bucket
+        )
       : []
   if (liveMetricDetails[crashedBucketCountKey] === 0 || vanished.length > 0) {
     crashDetails.processMetricsCrashedProcessAbsent = true
@@ -274,6 +288,16 @@ export function buildProcessGoneCrashDetails(
     )
     if (vanished.length === 1) {
       crashDetails.processMetricsVanishedPid = vanished[0].pid
+    } else {
+      // Why: the sum spans unrelated exits (a closed pane plus the crasher);
+      // Largest bounds what any single vanished process held.
+      crashDetails.processMetricsVanishedLargestWorkingSetMB = vanished.reduce(
+        (max, p) => Math.max(max, p.workingSetMB),
+        0
+      )
+    }
+    for (const p of vanished) {
+      attributedVanishedPids.add(p.pid)
     }
   }
   if (preGoneSample) {
