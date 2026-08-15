@@ -1,16 +1,22 @@
 // @vitest-environment happy-dom
 
-// The "Restart Orca" escape hatch on contained lazy-chunk fallbacks: it must
-// only appear when the failure is a stale chunk AND the host can relaunch
-// (paired-web hosts without the bridge get no dead button), and a refused
-// pre-relaunch checkpoint must re-enable it instead of leaving it stuck.
+// The "Restart Orca" escape hatch on contained lazy-chunk fallbacks: a broken
+// document should not be the one recovering itself, so the main-driven restart
+// is the primary action and the in-place Retry its lower-emphasis sibling. It
+// must only appear when the failure is a stale chunk AND the host can relaunch,
+// a refused pre-relaunch checkpoint must re-enable it, and a relaunch that
+// leaves this document alive (swallowed in-place reload on the browser
+// fallback host, hung invoke) must give the buttons back after a grace.
 
 import { act, type ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LazyChunkLoadError } from '@/lib/lazy-with-retry'
-import { RecoverableRenderErrorBoundary } from './RecoverableRenderErrorBoundary'
+import {
+  RecoverableRenderErrorBoundary,
+  RELAUNCH_SETTLE_GRACE_MS
+} from './RecoverableRenderErrorBoundary'
 
 const reportCrashMock = vi.hoisted(() => vi.fn())
 
@@ -28,6 +34,14 @@ function findRestartButton(container: HTMLElement): HTMLButtonElement | null {
   return (
     Array.from(container.querySelectorAll<HTMLButtonElement>('[role="alert"] button')).find(
       (button) => button.textContent?.includes('Restart Orca')
+    ) ?? null
+  )
+}
+
+function findRetryButton(container: HTMLElement): HTMLButtonElement | null {
+  return (
+    Array.from(container.querySelectorAll<HTMLButtonElement>('[role="alert"] button')).find(
+      (button) => button.textContent?.includes('Retry')
     ) ?? null
   )
 }
@@ -51,6 +65,7 @@ describe('RecoverableRenderErrorBoundary Restart Orca button', () => {
     container = null
     delete (window as unknown as { api?: unknown }).api
     consoleError.mockRestore()
+    vi.useRealTimers()
   })
 
   function renderBoundaryWith(error: Error): void {
@@ -66,7 +81,7 @@ describe('RecoverableRenderErrorBoundary Restart Orca button', () => {
     })
   }
 
-  it('offers Restart Orca for a contained chunk failure when the host can relaunch', () => {
+  it('offers Restart Orca as the primary action for a contained chunk failure when the host can relaunch', () => {
     const relaunch = vi.fn<() => Promise<void>>().mockReturnValue(new Promise(() => undefined))
     ;(window as unknown as { api: unknown }).api = { app: { relaunch } }
 
@@ -76,10 +91,67 @@ describe('RecoverableRenderErrorBoundary Restart Orca button', () => {
     expect(restart).not.toBeNull()
     expect(container!.textContent).toContain('This part of Orca could not load.')
 
+    // The main-driven restart leads; the in-place Retry is its lower-emphasis sibling.
+    const buttons = Array.from(
+      container!.querySelectorAll<HTMLButtonElement>('[role="alert"] button')
+    )
+    expect(buttons[0]).toBe(restart)
+    expect(restart?.dataset.variant).toBe('default')
+    const retry = findRetryButton(container!)
+    expect(retry?.dataset.variant).toBe('secondary')
+
     act(() => restart?.click())
     expect(relaunch).toHaveBeenCalledTimes(1)
-    // Stays disabled while the main-driven relaunch tears the window down.
+    // Both stay disabled while the main-driven relaunch tears the window down —
+    // a Retry that swaps the surface out mid-checkpoint helps nobody.
     expect(restart?.disabled).toBe(true)
+    expect(findRetryButton(container!)?.disabled).toBe(true)
+  })
+
+  it('sends one relaunch when Restart Orca is double-clicked before the disabled state commits', () => {
+    const relaunch = vi.fn<() => Promise<void>>().mockReturnValue(new Promise(() => undefined))
+    ;(window as unknown as { api: unknown }).api = { app: { relaunch } }
+
+    renderBoundaryWith(new LazyChunkLoadError(new SyntaxError("Unexpected token '}'")))
+
+    const restart = findRestartButton(container!)
+    act(() => {
+      // Raw dispatch models the second click of a double-click landing before
+      // React commits the disabled attribute; a doubled app.relaunch() would
+      // spawn two replacement instances.
+      const click = (): void => {
+        restart?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+      }
+      click()
+      click()
+    })
+    expect(relaunch).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives the buttons back with a notice when the document survives the relaunch grace', async () => {
+    vi.useFakeTimers()
+    // Browser-fallback host shape: relaunch is an in-place reload that resolves
+    // immediately; a broken document can swallow the navigation entirely.
+    const relaunch = vi.fn<() => Promise<void>>().mockResolvedValue(undefined)
+    ;(window as unknown as { api: unknown }).api = { app: { relaunch } }
+
+    renderBoundaryWith(new LazyChunkLoadError(new SyntaxError("Unexpected token '}'")))
+
+    const restart = findRestartButton(container!)
+    act(() => restart?.click())
+    expect(restart?.disabled).toBe(true)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RELAUNCH_SETTLE_GRACE_MS + 1)
+    })
+    expect(findRestartButton(container!)?.disabled).toBe(false)
+    expect(findRetryButton(container!)?.disabled).toBe(false)
+    expect(container!.textContent).toContain("Restarting didn't complete.")
+
+    // The stall cleared the guard, so a second attempt is a fresh request.
+    act(() => findRestartButton(container!)?.click())
+    expect(relaunch).toHaveBeenCalledTimes(2)
+    expect(container!.textContent).not.toContain("Restarting didn't complete.")
   })
 
   it('re-enables the button when the pre-relaunch checkpoint refuses', async () => {
@@ -109,6 +181,8 @@ describe('RecoverableRenderErrorBoundary Restart Orca button', () => {
     renderBoundaryWith(new Error('ordinary render failure'))
     expect(findRestartButton(container!)).toBeNull()
     expect(container!.textContent).toContain('This part of Orca hit an error.')
+    // Non-stale errors keep the standalone outline Retry, exactly as before.
+    expect(findRetryButton(container!)?.dataset.variant).toBe('outline')
     act(() => root?.unmount())
     root = null
     container?.remove()

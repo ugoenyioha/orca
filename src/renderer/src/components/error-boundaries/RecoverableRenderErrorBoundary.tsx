@@ -29,10 +29,27 @@ type State = {
   error: Error | null
   resetKey: Props['resetKey']
   relaunching: boolean
+  relaunchStalled: boolean
 }
 
+// How long a clicked relaunch may leave this document alive before the fallback
+// takes the buttons back. An Electron relaunch tears the window down ~150ms after
+// the IPC resolves; a paired-web relaunch is an in-place reload that a broken
+// document can swallow entirely, which would otherwise pin the button disabled.
+export const RELAUNCH_SETTLE_GRACE_MS = 5_000
+
 export class RecoverableRenderErrorBoundary extends React.Component<Props, State> {
-  state: State = { error: null, resetKey: this.props.resetKey, relaunching: false }
+  state: State = {
+    error: null,
+    resetKey: this.props.resetKey,
+    relaunching: false,
+    relaunchStalled: false
+  }
+
+  // Sync double-click guard: the second click can reach the handler before the
+  // disabled re-render commits, and a doubled app.relaunch() spawns two instances.
+  private relaunchRequested = false
+  private relaunchSettleTimer: ReturnType<typeof setTimeout> | null = null
 
   static getDerivedStateFromProps(props: Props, state: State): Partial<State> | null {
     if (props.resetKey !== state.resetKey) {
@@ -66,17 +83,45 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
     })
   }
 
+  componentWillUnmount(): void {
+    this.clearRelaunchSettleTimer()
+  }
+
   handleReset = (): void => {
-    this.setState({ error: null })
+    this.setState({ error: null, relaunchStalled: false })
   }
 
   handleRelaunchApp = (): void => {
-    this.setState({ relaunching: true })
+    if (this.relaunchRequested) {
+      return
+    }
+    this.relaunchRequested = true
+    this.setState({ relaunching: true, relaunchStalled: false })
+    // Why: if this document is still alive after the grace, the relaunch went
+    // nowhere (swallowed in-place reload, hung invoke); give the buttons back
+    // with a notice instead of leaving a dead disabled control.
+    this.relaunchSettleTimer = setTimeout(
+      () => this.markRelaunchStalled(),
+      RELAUNCH_SETTLE_GRACE_MS
+    )
     void window.api.app.relaunch().catch((error: unknown) => {
       // Why: a refused pre-relaunch checkpoint keeps the app open; re-enable the button.
       console.error(`[${this.props.boundaryId}] app relaunch failed`, error)
-      this.setState({ relaunching: false })
+      this.markRelaunchStalled()
     })
+  }
+
+  private clearRelaunchSettleTimer(): void {
+    if (this.relaunchSettleTimer !== null) {
+      clearTimeout(this.relaunchSettleTimer)
+      this.relaunchSettleTimer = null
+    }
+  }
+
+  private markRelaunchStalled(): void {
+    this.clearRelaunchSettleTimer()
+    this.relaunchRequested = false
+    this.setState({ relaunching: false, relaunchStalled: true })
   }
 
   render(): React.ReactNode {
@@ -123,7 +168,7 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
               (staleChunk
                 ? translate(
                     'auto.components.error.boundaries.RecoverableRenderErrorBoundary.staleChunkDescription',
-                    'Orca may have updated in the background. Retry, or restart Orca to finish applying the update.'
+                    'Orca may have updated in the background. Restart Orca to finish applying the update, or retry this part.'
                   )
                 : translate(
                     'auto.components.error.boundaries.RecoverableRenderErrorBoundary.34a189ae0f',
@@ -132,17 +177,13 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={this.handleReset}>
-            <RotateCw className="size-3.5" />
-            {translate(
-              'auto.components.error.boundaries.RecoverableRenderErrorBoundary.55001880db',
-              'Retry'
-            )}
-          </Button>
           {canRelaunch ? (
+            // A broken document is not the place to recover itself: the main-driven
+            // relaunch leads, and the in-place Retry stays as the lighter sibling
+            // for the case where assets have already settled.
             <Button
               type="button"
-              variant="outline"
+              variant="default"
               size="sm"
               disabled={this.state.relaunching}
               onClick={this.handleRelaunchApp}
@@ -153,7 +194,28 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
               )}
             </Button>
           ) : null}
+          <Button
+            type="button"
+            variant={canRelaunch ? 'secondary' : 'outline'}
+            size="sm"
+            disabled={this.state.relaunching}
+            onClick={this.handleReset}
+          >
+            <RotateCw className="size-3.5" />
+            {translate(
+              'auto.components.error.boundaries.RecoverableRenderErrorBoundary.55001880db',
+              'Retry'
+            )}
+          </Button>
         </div>
+        {this.state.relaunchStalled ? (
+          <div className="max-w-md text-xs">
+            {translate(
+              'auto.components.error.boundaries.RecoverableRenderErrorBoundary.restartStalled',
+              "Restarting didn't complete. Try again, or retry this part of Orca."
+            )}
+          </div>
+        ) : null}
       </div>
     )
   }

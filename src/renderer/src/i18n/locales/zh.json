@@ -12486,7 +12486,8 @@
             "34a189ae0f": "应用程序的其余部分仍在运行。重试此表面或切换出去然后再回来。",
             "ab855c11f4": "Orca 的这一部分遇到了错误。",
             "restartOrca": "重启 Orca",
-            "staleChunkDescription": "Orca 可能已在后台完成更新。请重试，或重启 Orca 以完成更新。",
+            "restartStalled": "重启未完成。请再试一次，或重试 Orca 的这一部分。",
+            "staleChunkDescription": "Orca 可能已在后台完成更新。请重启 Orca 以完成更新，或重试这一部分。",
             "staleChunkTitle": "无法加载 Orca 的这一部分。"
           }
         }

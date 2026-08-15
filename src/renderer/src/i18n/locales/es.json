@@ -12466,7 +12466,8 @@
             "34a189ae0f": "El resto de la app sigue ejecutándose. Reintenta esta vista o cambia a otra y vuelve.",
             "ab855c11f4": "Esta parte de Orca encontró un error.",
             "restartOrca": "Reiniciar Orca",
-            "staleChunkDescription": "Es posible que Orca se haya actualizado en segundo plano. Reintenta, o reinicia Orca para terminar de aplicar la actualización.",
+            "restartStalled": "El reinicio no se completó. Inténtalo de nuevo, o reintenta esta parte de Orca.",
+            "staleChunkDescription": "Es posible que Orca se haya actualizado en segundo plano. Reinicia Orca para terminar de aplicar la actualización, o reintenta esta parte.",
             "staleChunkTitle": "No se pudo cargar esta parte de Orca."
           }
         }
