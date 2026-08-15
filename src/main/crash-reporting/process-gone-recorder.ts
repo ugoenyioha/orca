@@ -105,6 +105,9 @@ export function recordProcessGoneCrash(
   if (!isCrashReportReason(event.reason)) {
     return
   }
+  // Count before observing so an event is never its own sibling: a lone child
+  // kill must classify and breadcrumb with zero siblings, not one.
+  const siblingKills = siblingProcessTreeKillCount(event)
   if (event.reason === 'killed') {
     observeProcessGoneKill({
       at: Date.now(),
@@ -113,7 +116,6 @@ export function recordProcessGoneCrash(
       exitCode: event.exitCode
     })
   }
-  const siblingKills = siblingProcessTreeKillCount(event)
   if (
     !shouldRecordProcessGoneCrash({
       source: event.source,

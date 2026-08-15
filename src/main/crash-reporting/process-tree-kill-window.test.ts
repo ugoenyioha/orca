@@ -75,6 +75,15 @@ describe('countSiblingProcessTreeKills', () => {
     expect(countSiblingProcessTreeKills({ reason: 'killed', exitCode: 1, at: 2_900 })).toBe(1)
   })
 
+  // Literal for the same reason on the widen side: a wider window would
+  // suppress genuine kills on stale churn evidence, and every symbolic test
+  // stretches with the constant.
+  it('drops a kill 2.1s away outside the window', () => {
+    observeProcessGoneKill(childKill(1_000))
+
+    expect(countSiblingProcessTreeKills({ reason: 'killed', exitCode: 1, at: 3_100 })).toBe(0)
+  })
+
   it('ignores kills with a different reason or exit code', () => {
     observeProcessGoneKill(childKill(1_000, 9))
     observeProcessGoneKill({ at: 1_000, source: 'child', reason: 'crashed', exitCode: 1 })

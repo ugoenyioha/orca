@@ -480,6 +480,49 @@ describe('recordProcessGoneCrash whole-process-tree kills', () => {
     expect(record).toHaveBeenCalledOnce()
   })
 
+  // A lone recoverable child kill has no siblings; a self-inclusive count in
+  // its suppressed breadcrumb would fabricate tree-kill evidence in forensics.
+  it('does not count a child kill as its own sibling in the suppressed breadcrumb', () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+
+    recordProcessGoneCrash({ record } as never, gpuKill, new ProcessGoneDedupe())
+
+    expect(record).not.toHaveBeenCalled()
+    const suppressed = getCrashBreadcrumbSnapshot().find(
+      (breadcrumb) => breadcrumb.name === 'process_gone_suppressed'
+    )
+    expect(suppressed?.data).not.toHaveProperty('siblingKills')
+  })
+
+  // Only `killed` events may enter the ring: a crash-looping recoverable child
+  // (reason 'crashed', seen at 1459/min) must not evict killed/1 tree-kill
+  // evidence before the renderer event arrives.
+  it('keeps tree-kill evidence through a crashed-churn flood', async () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    const dedupe = new ProcessGoneDedupe()
+    vi.useFakeTimers()
+    vi.setSystemTime(1_785_818_589_464)
+
+    recordProcessGoneCrash({ record } as never, gpuKill, dedupe)
+    for (let i = 0; i < 20; i++) {
+      recordProcessGoneCrash(
+        { record } as never,
+        event({
+          source: 'child',
+          processType: 'Utility',
+          reason: 'crashed',
+          exitCode: 1,
+          details: { serviceName: 'network.mojom.NetworkService', type: 'Utility' }
+        }),
+        dedupe
+      )
+    }
+    recordProcessGoneCrash({ record } as never, rendererKill, dedupe)
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(record).not.toHaveBeenCalled()
+  })
+
   it('ignores child kills that died with a different exit code', async () => {
     const record = vi.fn().mockResolvedValue({ id: 'report-1' })
     const dedupe = new ProcessGoneDedupe()
@@ -515,8 +558,9 @@ describe('recordProcessGoneCrash whole-process-tree kills', () => {
     )
   })
 
-  // Child kills observe themselves into the ring before counting; the sibling
-  // clause must never read that self-count as a reason to drop a child report.
+  // A lone non-recoverable child kill must report: guards the sibling clause
+  // staying renderer-only and the count staying self-exclusive — regressing
+  // either would silently drop every such report.
   it('still reports a non-recoverable child kill despite its own ring entry', async () => {
     const record = vi.fn().mockResolvedValue({ id: 'report-1' })
 

@@ -361,9 +361,9 @@ describe('shouldRecordProcessGoneCrash', () => {
     ).toBe(false)
   })
 
-  // Sibling suppression is renderer-only: a child kill always counts itself
-  // into the ring, so a source-blind clause would drop every non-recoverable
-  // child kill report.
+  // Sibling suppression is renderer-only: the noise cluster is renderer
+  // killed/1, and a source-blind clause would also drop non-recoverable child
+  // kill reports whenever churn coincides (or a caller self-counts).
   it('keeps reporting a non-recoverable child kill that has sibling kills', () => {
     expect(
       shouldRecordProcessGoneCrash({
