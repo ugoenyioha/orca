@@ -56,12 +56,14 @@ export function recordCoalescedDurableCrashBreadcrumb({
   name,
   data,
   coalesceKey,
-  minIntervalMs
+  minIntervalMs,
+  failureCause
 }: {
   name: string
   data?: CrashReportBreadcrumbData
   coalesceKey: string
   minIntervalMs: number
+  failureCause?: string
 }): void {
   const sanitizedName = sanitizeCrashReportString(name)
   const lifecycleData = buildLifecycleData(data)
@@ -78,6 +80,7 @@ export function recordCoalescedDurableCrashBreadcrumb({
     sanitizedName,
     coalesced.suppressedSinceLast > 0
       ? { ...lifecycleData, suppressedSinceLast: coalesced.suppressedSinceLast }
-      : lifecycleData
+      : lifecycleData,
+    failureCause
   )
 }

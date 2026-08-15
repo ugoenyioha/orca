@@ -137,11 +137,21 @@ export function recordProcessGoneCrash(
     // child event would have retracted. If the main process dies inside the
     // settle, the lost report is the tree-kill report we meant to drop — but
     // flush durable evidence now so even that case leaves a trace.
-    recordDurableCrashBreadcrumb(
-      'process_gone_deferred',
-      processGoneBreadcrumbData(event),
-      `renderer killed (${event.exitCode ?? 'unknown'}); deferred ${PROCESS_TREE_KILL_SETTLE_MS}ms for sibling recount`
-    )
+    // Coalesced: a kill-reload loop must not pay a span plus forced disk flush
+    // per event; the first event in a window still flushes synchronously and
+    // repeats fold into suppressedSinceLast. Window stays uniform at 30s — the
+    // coalesce map prunes every key with the calling window, so a shorter one
+    // here would evict the suppressed path's state early. The key is
+    // name-prefixed so the settle's suppressed crumb is never folded into this
+    // deferral marker.
+    const deferredData = processGoneBreadcrumbData(event)
+    recordCoalescedDurableCrashBreadcrumb({
+      name: 'process_gone_deferred',
+      data: deferredData,
+      coalesceKey: `process_gone_deferred:${suppressedProcessGoneCoalesceKey(deferredData)}`,
+      minIntervalMs: SUPPRESSED_PROCESS_GONE_COALESCE_MS,
+      failureCause: `renderer killed (${event.exitCode ?? 'unknown'}); deferred ${PROCESS_TREE_KILL_SETTLE_MS}ms for sibling recount`
+    })
     const settleTimer = setTimeout(() => {
       const settledSiblingKills = siblingProcessTreeKillCount(event)
       if (settledSiblingKills > 0) {

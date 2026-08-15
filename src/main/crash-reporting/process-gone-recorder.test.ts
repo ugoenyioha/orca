@@ -579,6 +579,47 @@ describe('recordProcessGoneCrash whole-process-tree kills', () => {
     await vi.waitFor(() => expect(record).toHaveBeenCalledOnce())
   })
 
+  // Coalesced on purpose: a kill-reload loop must not pay a forced disk flush
+  // per event. The first event must still flush synchronously (durability is
+  // the point of the crumb) and repeats must keep their count.
+  it('flushes the first deferred kill immediately and folds repeats within the window', async () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    vi.useFakeTimers()
+    vi.setSystemTime(1_785_818_589_464)
+
+    recordProcessGoneCrash({ record } as never, rendererKill, new ProcessGoneDedupe())
+    expect(sink.flushMock).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(50)
+    recordProcessGoneCrash({ record } as never, rendererKill, new ProcessGoneDedupe())
+    expect(sink.flushMock).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(250)
+
+    const deferred = getCrashBreadcrumbSnapshot().find(
+      (breadcrumb) => breadcrumb.name === 'process_gone_deferred'
+    )
+    expect(deferred?.data?.suppressedSinceLast).toBe(1)
+  })
+
+  // The coalesce map prunes every key with the calling window, so a deferred
+  // call with a shorter window would evict the suppressed path's 30s state and
+  // re-emit (span + forced flush) what should have coalesced.
+  it('keeps the deferred coalesce window from evicting suppressed-churn state', async () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    const dedupe = new ProcessGoneDedupe()
+    vi.useFakeTimers()
+    vi.setSystemTime(1_785_818_589_464)
+
+    recordProcessGoneCrash({ record } as never, gpuKill, dedupe)
+    await vi.advanceTimersByTimeAsync(3_000)
+    recordProcessGoneCrash({ record } as never, rendererKill, dedupe)
+    await vi.advanceTimersByTimeAsync(250)
+    recordProcessGoneCrash({ record } as never, gpuKill, dedupe)
+
+    // gpu churn emit + deferred emit + solitary persist; the gpu repeat folds.
+    expect(sink.flushMock).toHaveBeenCalledTimes(3)
+    expect(record).toHaveBeenCalledOnce()
+  })
+
   // The pre-deferral code flushed the process-gone span synchronously; a main
   // process dying inside the settle must still leave durable evidence behind.
   it('flushes durable evidence at defer time so a mid-settle main death leaves a trace', () => {
