@@ -50,6 +50,7 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
   // disabled re-render commits, and a doubled app.relaunch() spawns two instances.
   private relaunchRequested = false
   private relaunchSettleTimer: ReturnType<typeof setTimeout> | null = null
+  private unmounted = false
 
   static getDerivedStateFromProps(props: Props, state: State): Partial<State> | null {
     if (props.resetKey !== state.resetKey) {
@@ -84,6 +85,7 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
   }
 
   componentWillUnmount(): void {
+    this.unmounted = true
     this.clearRelaunchSettleTimer()
   }
 
@@ -97,18 +99,27 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
     }
     this.relaunchRequested = true
     this.setState({ relaunching: true, relaunchStalled: false })
-    // Why: if this document is still alive after the grace, the relaunch went
-    // nowhere (swallowed in-place reload, hung invoke); give the buttons back
-    // with a notice instead of leaving a dead disabled control.
-    this.relaunchSettleTimer = setTimeout(
-      () => this.markRelaunchStalled(),
-      RELAUNCH_SETTLE_GRACE_MS
+    void window.api.app.relaunch().then(
+      () => {
+        // Why: a resolved relaunch that leaves this document alive went nowhere
+        // (swallowed in-place reload, teardown that never came); give the
+        // buttons back with a notice instead of leaving a dead disabled control.
+        // The grace must NOT start while the invoke is still pending — a slow
+        // pre-relaunch checkpoint is normal, and re-arming the button mid-invoke
+        // could double app.relaunch() into two replacement instances.
+        if (!this.unmounted) {
+          this.relaunchSettleTimer = setTimeout(
+            () => this.markRelaunchStalled(),
+            RELAUNCH_SETTLE_GRACE_MS
+          )
+        }
+      },
+      (error: unknown) => {
+        // Why: a refused pre-relaunch checkpoint keeps the app open; re-enable the button.
+        console.error(`[${this.props.boundaryId}] app relaunch failed`, error)
+        this.markRelaunchStalled()
+      }
     )
-    void window.api.app.relaunch().catch((error: unknown) => {
-      // Why: a refused pre-relaunch checkpoint keeps the app open; re-enable the button.
-      console.error(`[${this.props.boundaryId}] app relaunch failed`, error)
-      this.markRelaunchStalled()
-    })
   }
 
   private clearRelaunchSettleTimer(): void {

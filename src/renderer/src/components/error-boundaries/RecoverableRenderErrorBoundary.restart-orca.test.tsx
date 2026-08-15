@@ -128,7 +128,25 @@ describe('RecoverableRenderErrorBoundary Restart Orca button', () => {
     expect(relaunch).toHaveBeenCalledTimes(1)
   })
 
-  it('gives the buttons back with a notice when the document survives the relaunch grace', async () => {
+  it('keeps the buttons locked past the grace while the relaunch invoke is still pending', async () => {
+    vi.useFakeTimers()
+    // Electron shape mid-flight: a slow pre-relaunch checkpoint legitimately
+    // keeps the invoke pending; re-arming the button here could double
+    // app.relaunch() into two replacement instances.
+    const relaunch = vi.fn<() => Promise<void>>().mockReturnValue(new Promise(() => undefined))
+    ;(window as unknown as { api: unknown }).api = { app: { relaunch } }
+
+    renderBoundaryWith(new LazyChunkLoadError(new SyntaxError("Unexpected token '}'")))
+
+    act(() => findRestartButton(container!)?.click())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RELAUNCH_SETTLE_GRACE_MS * 3)
+    })
+    expect(findRestartButton(container!)?.disabled).toBe(true)
+    expect(container!.textContent).not.toContain("Restarting didn't complete.")
+  })
+
+  it('gives the buttons back with a notice when the document survives a resolved relaunch', async () => {
     vi.useFakeTimers()
     // Browser-fallback host shape: relaunch is an in-place reload that resolves
     // immediately; a broken document can swallow the navigation entirely.
