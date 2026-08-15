@@ -16,14 +16,20 @@ export function useTerminalProviderSnapshotCapability(enabled: boolean): void {
   // pending-reconnect ptys back into the exempt-by-default unknown state.
   // Why keyed: layouts change without changing the pty set (active-leaf churn);
   // the synchronization loop must restart only on genuine id-set changes.
-  const boundPtyIdsKey = collectTerminalProviderSnapshotPtyIds({
-    tabsByWorktree,
-    ptyIdsByTabId,
-    pendingReconnectPtyIdByTabId,
-    terminalLayoutsByTabId
-  })
-    .sort()
-    .join('\n')
+  // Why memoized on the map identities: this runs at Terminal's render cadence,
+  // and only a change to one of the four collected maps can alter the id set.
+  const boundPtyIdsKey = useMemo(
+    () =>
+      collectTerminalProviderSnapshotPtyIds({
+        tabsByWorktree,
+        ptyIdsByTabId,
+        pendingReconnectPtyIdByTabId,
+        terminalLayoutsByTabId
+      })
+        .sort()
+        .join('\n'),
+    [tabsByWorktree, ptyIdsByTabId, pendingReconnectPtyIdByTabId, terminalLayoutsByTabId]
+  )
   const boundPtyIds = useMemo(
     () => (boundPtyIdsKey.length === 0 ? [] : boundPtyIdsKey.split('\n')),
     [boundPtyIdsKey]

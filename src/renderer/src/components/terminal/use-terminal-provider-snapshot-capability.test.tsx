@@ -74,6 +74,27 @@ describe('useTerminalProviderSnapshotCapability', () => {
     hook.unmount()
   })
 
+  // Why: the collect key is memoized on the four store maps; a missing memo
+  // dep would freeze the key and silently drop new split-leaf ptys from the
+  // sync — a stale-collector correctness bug, not a perf one.
+  it('re-collects when a split leaf pty appears in the layouts map', async () => {
+    resolveCapabilities.mockImplementation(async (ids: string[]) =>
+      ids.map((id) => ({ id, authoritative: true }))
+    )
+    const hook = renderHook(() => useTerminalProviderSnapshotCapability(true))
+    await waitFor(() => expect(resolveCapabilities).toHaveBeenCalledOnce())
+
+    storeState.terminalLayoutsByTabId = {
+      'tab-1': { ptyIdsByLeafId: { leaf: 'ssh:target@@new-split' } }
+    }
+    hook.rerender()
+
+    await waitFor(() =>
+      expect(resolveCapabilities).toHaveBeenLastCalledWith(['ssh:target@@new-split'])
+    )
+    hook.unmount()
+  })
+
   it('prefetches restored PTYs after render before activation is enabled', async () => {
     resolveCapabilities.mockResolvedValue([{ id: 'ssh:target@@pty-1', authoritative: false }])
 
