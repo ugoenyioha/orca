@@ -154,13 +154,15 @@ function getLiveProcessGoneMetrics(): LiveProcessGoneMetrics {
 // so gone-time getAppMetrics() only sees survivors — field reports carried
 // processMetricsRendererCount=0 for every renderer death. A periodic sample
 // keeps the last pre-death working sets so the crasher's size survives it.
+// Staleness honesty: PreGone values are sample-time, not death-time — a
+// process that grew in the up-to-60s before death is understated, bounded
+// only by PreGoneSampleAgeMs and the lifetime peak fields.
 
 export const PROCESS_METRICS_PRE_GONE_SAMPLE_INTERVAL_MS = 60_000
 
 type PreGoneSampledProcess = {
   pid: number
   bucket: ProcessMetricBucketName
-  workingSetMB: number
 }
 
 type PreGoneProcessMetricsSample = {
@@ -171,17 +173,6 @@ type PreGoneProcessMetricsSample = {
 
 let preGoneSample: PreGoneProcessMetricsSample | null = null
 let preGoneSampleTimer: ReturnType<typeof setInterval> | null = null
-// Why: a pid reported as Vanished once must not be re-attributed to a later
-// crash — a crash-looped respawn dying before the next sweep would otherwise
-// confidently inherit the previous crasher's pid and working set.
-// Bounded: only pids of the current sample are ever added, and a successful
-// sweep clears it, so it never outgrows one sample's process list.
-const attributedVanishedPids = new Set<number>()
-// Why: a crash recorded while gone-time metrics were unreadable consumed
-// nothing — a later record's Vanished numbers drawn from the same sample era
-// may describe THAT crash, not their own. Track the blind buckets so the
-// later record says so instead of attributing confidently.
-const metricsBlindCrashBuckets = new Set<ProcessMetricBucketName>()
 
 function sampledProcessIdentities(metrics: ProcessMetricLike[]): PreGoneSampledProcess[] {
   const processes: PreGoneSampledProcess[] = []
@@ -190,11 +181,7 @@ function sampledProcessIdentities(metrics: ProcessMetricLike[]): PreGoneSampledP
     if (pid === undefined) {
       continue
     }
-    processes.push({
-      pid,
-      bucket: metricTypeBucket(metric.type),
-      workingSetMB: workingSetMB(metric)
-    })
+    processes.push({ pid, bucket: metricTypeBucket(metric.type) })
   }
   return processes
 }
@@ -207,9 +194,6 @@ export function samplePreGoneProcessMetrics(nowMs: number = Date.now()): void {
       processes: sampledProcessIdentities(metrics),
       sampledAtMs: nowMs
     }
-    // Fresh identities: attribution state belongs to the sample it came from.
-    attributedVanishedPids.clear()
-    metricsBlindCrashBuckets.clear()
   } catch {
     // Why: a failed sweep must not erase the previous good sample.
   }
@@ -232,8 +216,6 @@ export function resetPreGoneProcessMetricsSamplingForTest(): void {
   }
   preGoneSampleTimer = null
   preGoneSample = null
-  attributedVanishedPids.clear()
-  metricsBlindCrashBuckets.clear()
 }
 
 const PROCESS_METRICS_KEY_PREFIX = 'processMetrics'
@@ -268,66 +250,22 @@ export function buildProcessGoneCrashDetails(
   // Why: with the crasher gone, Largest names a survivor — flag that so the
   // live buckets are read as "everyone else", not as the crashed process.
   // Same-bucket survivors are the norm (webview guests, the dashboard popout,
-  // origin-bar views), so a zero bucket count alone under-detects: also treat
-  // a sampled same-bucket pid that vanished from the live set as proof. That
-  // still misses a crasher younger than the last sweep, and Vanished can
-  // include a legitimately-closed same-bucket process — Pid is only emitted
-  // when the vanished process is unambiguous among SAMPLED processes; it can
-  // still name a legitimately-closed one when the true crasher was younger
-  // than the last sweep.
+  // origin-bar views), so a zero bucket count alone under-detects: a sampled
+  // same-bucket pid missing from the live set — including one the OS recycled
+  // into a different bucket — also proves absence. The proof is stateless and
+  // holds for every record of a crash loop. False negatives remain when the
+  // crasher was younger than the last sweep, or when its pid was recycled
+  // into a NEW same-bucket process inside the sweep window.
   const crashedBucket = metricTypeBucket(crashedProcessType)
   const crashedBucketCountKey = `${PROCESS_METRICS_KEY_PREFIX}${titleCaseBucket(crashedBucket)}Count`
-  if (!livePidBuckets) {
-    metricsBlindCrashBuckets.add(crashedBucket)
-  }
-  let vanishedAlreadyReported = 0
-  const vanished =
-    livePidBuckets && preGoneSample
-      ? preGoneSample.processes.filter((p) => {
-          if (p.bucket !== crashedBucket || livePidBuckets.get(p.pid) === p.bucket) {
-            return false
-          }
-          if (attributedVanishedPids.has(p.pid)) {
-            vanishedAlreadyReported += 1
-            return false
-          }
-          return true
-        })
-      : []
-  if (liveMetricDetails[crashedBucketCountKey] === 0 || vanished.length > 0) {
-    crashDetails.processMetricsCrashedProcessAbsent = true
-  }
-  if (vanished.length > 0) {
-    crashDetails.processMetricsVanishedCount = vanished.length
-    crashDetails.processMetricsVanishedWorkingSetMB = vanished.reduce(
-      (sum, p) => sum + p.workingSetMB,
-      0
-    )
-    if (vanished.length === 1) {
-      crashDetails.processMetricsVanishedPid = vanished[0].pid
-    } else {
-      // Why: the sum spans unrelated exits (a closed pane plus the crasher);
-      // Largest bounds what any single vanished process held.
-      crashDetails.processMetricsVanishedLargestWorkingSetMB = vanished.reduce(
-        (max, p) => Math.max(max, p.workingSetMB),
-        0
+  const sampledSameBucketPidVanished = Boolean(
+    livePidBuckets &&
+      preGoneSample?.processes.some(
+        (p) => p.bucket === crashedBucket && livePidBuckets.get(p.pid) !== p.bucket
       )
-    }
-    if (metricsBlindCrashBuckets.has(crashedBucket) || vanishedAlreadyReported > 0) {
-      // Why: an earlier same-bucket crash this era either consumed nothing (a
-      // blind record) or consumed pids and left an unsampled respawn — either
-      // way these Vanished numbers may describe a different process's exit.
-      crashDetails.processMetricsVanishedAmbiguousWithEarlierCrash = true
-    }
-    for (const p of vanished) {
-      attributedVanishedPids.add(p.pid)
-    }
-  }
-  if (vanishedAlreadyReported > 0) {
-    // Why: consumed attribution must not read as "nothing vanished" — this
-    // says an earlier record already reported these pids, so the PreGone
-    // mirrors below describe that earlier crasher's era, not this one's.
-    crashDetails.processMetricsVanishedAlreadyReportedCount = vanishedAlreadyReported
+  )
+  if (liveMetricDetails[crashedBucketCountKey] === 0 || sampledSameBucketPidVanished) {
+    crashDetails.processMetricsCrashedProcessAbsent = true
   }
   if (preGoneSample) {
     Object.assign(crashDetails, preGoneSampleDetails(preGoneSample, Date.now()))
