@@ -460,6 +460,26 @@ describe('recordProcessGoneCrash whole-process-tree kills', () => {
     expect(record).toHaveBeenCalledOnce()
   })
 
+  // A kill loop must not become self-suppressing: churn from one iteration
+  // ages out of the ±2s window and the next solitary kill still reports.
+  it('stops suppressing once the churn ages out of the correlation window', async () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    const dedupe = new ProcessGoneDedupe()
+    vi.useFakeTimers()
+    vi.setSystemTime(1_785_818_589_464)
+
+    recordProcessGoneCrash({ record } as never, gpuKill, dedupe)
+    recordProcessGoneCrash({ record } as never, rendererKill, dedupe)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(record).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(3_000)
+    recordProcessGoneCrash({ record } as never, rendererKill, dedupe)
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(record).toHaveBeenCalledOnce()
+  })
+
   it('ignores child kills that died with a different exit code', async () => {
     const record = vi.fn().mockResolvedValue({ id: 'report-1' })
     const dedupe = new ProcessGoneDedupe()

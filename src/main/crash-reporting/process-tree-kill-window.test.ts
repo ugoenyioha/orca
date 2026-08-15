@@ -36,6 +36,18 @@ describe('countSiblingProcessTreeKills', () => {
     expect(countSiblingProcessTreeKills({ reason: 'killed', exitCode: 1, at: 900 })).toBe(1)
   })
 
+  it('counts a child kill at exactly the window boundary', () => {
+    observeProcessGoneKill(childKill(1_000))
+
+    expect(
+      countSiblingProcessTreeKills({
+        reason: 'killed',
+        exitCode: 1,
+        at: 1_000 + PROCESS_TREE_KILL_WINDOW_MS
+      })
+    ).toBe(1)
+  })
+
   it('ignores kills with a different reason or exit code', () => {
     observeProcessGoneKill(childKill(1_000, 9))
     observeProcessGoneKill({ at: 1_000, source: 'child', reason: 'crashed', exitCode: 1 })
@@ -50,6 +62,18 @@ describe('countSiblingProcessTreeKills', () => {
     }
 
     expect(countSiblingProcessTreeKills({ reason: 'killed', exitCode: 1, at: 1_100 })).toBe(1)
+  })
+
+  // A pre-existing churn burst (network service seen at 1459/min) must not pin
+  // the ring at stale entries and discard the tree kill's fresh evidence.
+  it('evicts the oldest entries first so fresh sibling evidence survives a churn burst', () => {
+    for (let i = 0; i < 20; i++) {
+      observeProcessGoneKill(childKill(1_000 + i))
+    }
+    observeProcessGoneKill(childKill(60_000))
+    observeProcessGoneKill(childKill(60_040))
+
+    expect(countSiblingProcessTreeKills({ reason: 'killed', exitCode: 1, at: 60_050 })).toBe(2)
   })
 
   it('bounds the ring so a child kill flood cannot grow it', () => {

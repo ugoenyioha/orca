@@ -93,13 +93,16 @@ describe('recordProcessGoneCrash killed/1 ordering', () => {
   // and every one showed exactly this GPU+utility churn in the same second with
   // expectedTeardown 'none'. End-task and Restart Manager kills never deliver
   // session-end, so matching sibling churn is teardown evidence, not noise.
-  it('suppresses R3 after matching recoverable sibling churn', () => {
+  it('suppresses R3 after matching recoverable sibling churn', async () => {
     const record = vi.fn().mockResolvedValue({ id: 'report-1' })
     const dedupe = new ProcessGoneDedupe()
+    vi.useFakeTimers()
 
     recordProcessGoneCrash({ record } as never, gpuKill, dedupe)
     recordProcessGoneCrash({ record } as never, networkServiceKill, dedupe)
     recordProcessGoneCrash({ record } as never, rendererKill, dedupe)
+    // Past the settle, so this proves suppression rather than deferral.
+    await vi.advanceTimersByTimeAsync(PROCESS_TREE_KILL_SETTLE_MS)
 
     expect(record).not.toHaveBeenCalled()
   })
