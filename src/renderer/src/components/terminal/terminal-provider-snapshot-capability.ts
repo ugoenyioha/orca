@@ -15,8 +15,13 @@ const unknownCapabilityRetryAtByPtyId = new Map<string, number>()
 const unknownCapabilityAttemptsByPtyId = new Map<string, number>()
 const UNKNOWN_CAPABILITY_RETRY_MS = 1_000
 const UNKNOWN_CAPABILITY_MAX_RETRY_MS = 30_000
-/** 1/2/4/8/16/30/30 s — ~91 s of daemon-startup grace, then settle conservatively. */
+/** 1/2/4/8/16/30/30 s — ~91 s of daemon-startup grace, then a slow re-ask. */
 const UNKNOWN_CAPABILITY_MAX_ATTEMPTS = 8
+// Why re-askable: a permanent settle turned a slow daemon start into
+// session-long eviction exemption for every local pty — force-park could free
+// nothing until app restart. Unknown stays exempt (pane stays mounted), but a
+// recovered daemon is consulted again within one slow cycle.
+const SETTLED_UNKNOWN_REASK_MS = 5 * 60_000
 const CAPABILITY_RESOLUTION_TIMEOUT_MS = 1_000
 let lastSynchronizedLivePtyIds: readonly string[] | null = null
 let earliestUnknownCapabilityRetryAtMs = Number.POSITIVE_INFINITY
@@ -54,20 +59,23 @@ function refreshEarliestUnknownCapabilityRetry(): void {
   }
 }
 
-// Unknown routes settle eager after bounded retries to avoid lifelong capability polling.
+// Unknown routes decay to a slow cadence after the startup ladder — never a
+// permanent verdict, which the eviction-exemption path would inherit for life.
 function backOffUnknownCapability(ptyId: string, nowMs: number): void {
-  const attempts = (unknownCapabilityAttemptsByPtyId.get(ptyId) ?? 0) + 1
-  if (attempts >= UNKNOWN_CAPABILITY_MAX_ATTEMPTS) {
-    authoritativeSnapshotByPtyId.set(ptyId, false)
-    unknownCapabilityAttemptsByPtyId.delete(ptyId)
-    unknownCapabilityRetryAtByPtyId.delete(ptyId)
-    return
-  }
+  const attempts = Math.min(
+    (unknownCapabilityAttemptsByPtyId.get(ptyId) ?? 0) + 1,
+    UNKNOWN_CAPABILITY_MAX_ATTEMPTS
+  )
   unknownCapabilityAttemptsByPtyId.set(ptyId, attempts)
   unknownCapabilityRetryAtByPtyId.set(
     ptyId,
     nowMs +
-      Math.min(UNKNOWN_CAPABILITY_RETRY_MS * 2 ** (attempts - 1), UNKNOWN_CAPABILITY_MAX_RETRY_MS)
+      (attempts >= UNKNOWN_CAPABILITY_MAX_ATTEMPTS
+        ? SETTLED_UNKNOWN_REASK_MS
+        : Math.min(
+            UNKNOWN_CAPABILITY_RETRY_MS * 2 ** (attempts - 1),
+            UNKNOWN_CAPABILITY_MAX_RETRY_MS
+          ))
   )
 }
 

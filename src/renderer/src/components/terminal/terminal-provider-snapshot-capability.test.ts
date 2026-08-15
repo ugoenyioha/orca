@@ -165,14 +165,16 @@ describe('terminal provider snapshot capabilities', () => {
     expect(terminalProviderHasAuthoritativeSnapshot('current-pty')).toBe(true)
   })
 
-  it('stops polling for a PTY whose route never resolves', async () => {
-    // Bounded retries prevent lifelong capability polling for vanished routes.
+  it('decays polling to a slow cadence for a PTY whose route never resolves', async () => {
+    // Why not a permanent settle: the eviction-exemption path inherits the
+    // verdict for life, so an unresolvable route stays exempt but re-askable.
     const resolve = vi.fn(async () => [{ id: 'gone-pty', authoritative: null }])
     const backoffSchedule = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]
 
     let nowMs = 1_000
     await synchronizeTerminalProviderSnapshotCapabilities(['gone-pty'], resolve, nowMs)
     for (const delayMs of backoffSchedule) {
+      // Just before the deadline: no extra consult.
       await synchronizeTerminalProviderSnapshotCapabilities(
         ['gone-pty'],
         resolve,
@@ -181,22 +183,26 @@ describe('terminal provider snapshot capabilities', () => {
       nowMs += delayMs
       await synchronizeTerminalProviderSnapshotCapabilities(['gone-pty'], resolve, nowMs)
     }
-    const settledCallCount = resolve.mock.calls.length
+    const ladderCallCount = resolve.mock.calls.length
+    expect(ladderCallCount).toBe(backoffSchedule.length + 1)
 
-    for (let index = 1; index <= 1_000; index += 1) {
+    // Inside the slow window: still no consult.
+    await synchronizeTerminalProviderSnapshotCapabilities(['gone-pty'], resolve, nowMs + 60_000)
+    expect(resolve).toHaveBeenCalledTimes(ladderCallCount)
+
+    // Bounded slow cadence: one consult per elapsed slow window, not per call.
+    for (let index = 1; index <= 12; index += 1) {
       await synchronizeTerminalProviderSnapshotCapabilities(
         ['gone-pty'],
         resolve,
-        nowMs + index * 60_000
+        nowMs + index * 5 * 60_000
       )
     }
-
-    expect(settledCallCount).toBe(backoffSchedule.length + 1)
-    expect(resolve).toHaveBeenCalledTimes(settledCallCount)
+    expect(resolve.mock.calls.length).toBe(ladderCallCount + 12)
     expect(terminalProviderHasAuthoritativeSnapshot('gone-pty')).toBe(false)
   })
 
-  it('stops rescheduling once an unresolvable PTY has settled', async () => {
+  it('keeps rescheduling at the slow cadence once an unresolvable PTY has decayed', async () => {
     const resolve = vi.fn(async () => [{ id: 'gone-pty', authoritative: null }])
 
     let nowMs = 1_000
@@ -210,7 +216,9 @@ describe('terminal provider snapshot capabilities', () => {
       )
     }
 
-    expect(retryDelayMs).toBeNull()
+    // Why non-null: the slow re-ask keeps one timer alive so a recovered
+    // daemon is consulted again without any event wiring.
+    expect(retryDelayMs).toBe(5 * 60_000)
   })
 
   it('re-probes an unknown PTY from scratch after it closes and a new one appears', async () => {
