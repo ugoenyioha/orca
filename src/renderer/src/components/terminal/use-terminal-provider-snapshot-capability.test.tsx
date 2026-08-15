@@ -1,9 +1,21 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
-import { clearTerminalProviderSnapshotCapabilities } from './terminal-provider-snapshot-capability'
+import {
+  clearTerminalProviderSnapshotCapabilities,
+  collectTerminalProviderSnapshotPtyIds,
+  synchronizeTerminalProviderSnapshotCapabilities,
+  terminalProviderHasAuthoritativeSnapshot
+} from './terminal-provider-snapshot-capability'
 
-const storeState = {
+type HookStoreState = {
+  tabsByWorktree: Record<string, { id: string; ptyId: string | null }[]>
+  ptyIdsByTabId: Record<string, string[]>
+  pendingReconnectPtyIdByTabId?: Record<string, string>
+  terminalLayoutsByTabId?: Record<string, { ptyIdsByLeafId?: Record<string, string> }>
+}
+
+const storeState: HookStoreState = {
   tabsByWorktree: {
     'repo::worktree': [{ id: 'tab-1', ptyId: 'ssh:target@@pty-1' }]
   },
@@ -30,6 +42,36 @@ describe('useTerminalProviderSnapshotCapability', () => {
   afterEach(() => {
     vi.useRealTimers()
     delete (window as unknown as { api?: unknown }).api
+    delete storeState.pendingReconnectPtyIdByTabId
+    delete storeState.terminalLayoutsByTabId
+  })
+
+  // Why: synchronization PRUNES cached verdicts outside its collected set, so
+  // the ongoing collector must gather the same fields startup does
+  // (pending-reconnect and split-leaf layout ptys) or their startup answers
+  // decay back into exempt-by-default unknown.
+  it('keeps startup verdicts for split-leaf and pending-reconnect ptys alive', async () => {
+    storeState.pendingReconnectPtyIdByTabId = { 'tab-2': 'ssh:target@@restored' }
+    storeState.terminalLayoutsByTabId = {
+      'tab-1': { ptyIdsByLeafId: { leaf: 'ssh:target@@split' } }
+    }
+    const startupResolver = vi.fn(async (ids: string[]) =>
+      ids.map((id) => ({ id, authoritative: true }))
+    )
+    await synchronizeTerminalProviderSnapshotCapabilities(
+      collectTerminalProviderSnapshotPtyIds(storeState),
+      startupResolver
+    )
+    expect(terminalProviderHasAuthoritativeSnapshot('ssh:target@@split')).toBe(true)
+    resolveCapabilities.mockResolvedValue([])
+
+    const hook = renderHook(() => useTerminalProviderSnapshotCapability(true))
+    await Promise.resolve()
+
+    for (const ptyId of ['ssh:target@@pty-1', 'ssh:target@@split', 'ssh:target@@restored']) {
+      expect(terminalProviderHasAuthoritativeSnapshot(ptyId)).toBe(true)
+    }
+    hook.unmount()
   })
 
   it('prefetches restored PTYs after render before activation is enabled', async () => {

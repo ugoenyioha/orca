@@ -10,6 +10,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PTY_SESSION_ID_SEPARATOR } from '../../../../shared/pty-session-id-format'
 import {
   classifyEvictionExemptTerminalPty,
+  countEvictionExemptTabRoutes,
+  formatEvictionExemptRouteCounts,
   isEvictionExemptTerminalPty
 } from '../terminal-pane/terminal-hidden-worktree-retention'
 import {
@@ -102,5 +104,29 @@ describe('terminal provider snapshot capability re-settlement', () => {
         classifyEvictionExemptTerminalPty(id, WORKTREE_ID) !== null
       )
     }
+  })
+
+  // Why: these counts land in the force-park breadcrumb, so a mis-bucketed
+  // route would misdirect the field triage the breadcrumb exists for.
+  it('buckets route counts per classification for the force-park breadcrumb', () => {
+    const counts = countEvictionExemptTabRoutes(
+      [
+        { ptyId: 'no-separator-daemon-fail-open' },
+        { ptyId: `other-worktree${PTY_SESSION_ID_SEPARATOR}session-9` },
+        { ptyId: PTY_ID },
+        { ptyId: null }
+      ],
+      WORKTREE_ID
+    )
+
+    expect(counts).toEqual({
+      failOpen: 1,
+      foreignWorktree: 1,
+      capabilityUnknown: 1,
+      splitPane: 1
+    })
+    expect(formatEvictionExemptRouteCounts(counts)).toBe(
+      'routes=fail-open:1,foreign:1,capability:1,split-pane:1'
+    )
   })
 })
