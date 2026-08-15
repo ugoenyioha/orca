@@ -14,6 +14,7 @@ import {
 } from './crash-breadcrumb-store'
 import { ProcessGoneDedupe } from './process-gone-dedupe'
 import { recordProcessGoneCrash, type ProcessGoneCrashEvent } from './process-gone-recorder'
+import { resetProcessTreeKillWindowForTest } from './process-tree-kill-window'
 import { _resetTracerForTests, setActiveSink, type TracerSink } from '../observability/tracer'
 
 type CapturingSink = TracerSink & { records: unknown[]; flushMock: ReturnType<typeof vi.fn> }
@@ -48,9 +49,11 @@ beforeEach(() => {
   sink = capturingSink()
   setActiveSink(sink)
   clearCrashBreadcrumbsForTest()
+  resetProcessTreeKillWindowForTest()
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
   _resetTracerForTests()
   clearCrashBreadcrumbsForTest()
@@ -362,5 +365,110 @@ describe('recordProcessGoneCrash', () => {
     recordProcessGoneCrash({ record } as never, event(), dedupe)
 
     await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(2))
+  })
+})
+
+// Field anatomy from the 2026-08-14 sweep: seven v1.4.182 reports where a user
+// end-task or an OS shutdown wave killed the whole Electron tree. GPU and the
+// Network Service utility die killed/1, the renderer dies killed/1 within the
+// same second, expectedTeardown is 'none' in every one — and the renderer kill
+// is filed as a crash even though nothing in Orca faulted.
+describe('recordProcessGoneCrash whole-process-tree kills', () => {
+  const networkServiceKill = event({
+    source: 'child',
+    processType: 'Utility',
+    reason: 'killed',
+    exitCode: 1,
+    details: {
+      name: 'Network Service',
+      serviceName: 'network.mojom.NetworkService',
+      type: 'Utility'
+    }
+  })
+  const gpuKill = event({
+    source: 'child',
+    processType: 'GPU',
+    reason: 'killed',
+    exitCode: 1,
+    details: { serviceName: 'GPU', type: 'GPU' }
+  })
+  const rendererKill = event({ reason: 'killed', exitCode: 1 })
+
+  it('does not report the renderer kill when the children died first', () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    const dedupe = new ProcessGoneDedupe()
+    const nowSpy = vi.spyOn(Date, 'now')
+
+    nowSpy.mockReturnValue(1_785_708_578_662)
+    recordProcessGoneCrash({ record } as never, networkServiceKill, dedupe)
+    nowSpy.mockReturnValue(1_785_708_578_737)
+    recordProcessGoneCrash({ record } as never, gpuKill, dedupe)
+    nowSpy.mockReturnValue(1_785_708_578_746)
+    recordProcessGoneCrash({ record } as never, rendererKill, dedupe)
+
+    expect(record).not.toHaveBeenCalled()
+    expect(getCrashBreadcrumbSnapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'process_gone_suppressed',
+          data: expect.objectContaining({ source: 'renderer', siblingKills: 2 })
+        })
+      ])
+    )
+  })
+
+  // The same tree kill in the opposite order: the renderer event can land
+  // before its children (observed field offsets span -0.08s to +0.10s).
+  it('does not report the renderer kill when the children died right after', async () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    const dedupe = new ProcessGoneDedupe()
+    vi.useFakeTimers()
+    vi.setSystemTime(1_785_818_589_464)
+
+    recordProcessGoneCrash({ record } as never, rendererKill, dedupe)
+    vi.advanceTimersByTime(5)
+    recordProcessGoneCrash({ record } as never, networkServiceKill, dedupe)
+    vi.advanceTimersByTime(36)
+    recordProcessGoneCrash({ record } as never, gpuKill, dedupe)
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(record).not.toHaveBeenCalled()
+    expect(getCrashBreadcrumbSnapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'process_gone_suppressed',
+          data: expect.objectContaining({ source: 'renderer', siblingKills: 2 })
+        })
+      ])
+    )
+  })
+
+  it('still reports a solitary renderer kill once the sibling window settles', async () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    vi.useFakeTimers()
+
+    // Linux SIGKILL of the renderer alone (supervisor OOM-kill style) is a
+    // genuine report; no sibling churn means the settle must end in a report.
+    recordProcessGoneCrash(
+      { record } as never,
+      event({ reason: 'killed', exitCode: 9 }),
+      new ProcessGoneDedupe()
+    )
+    expect(record).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(record).toHaveBeenCalledOnce()
+  })
+
+  it('ignores child kills that died with a different exit code', async () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    const dedupe = new ProcessGoneDedupe()
+    vi.useFakeTimers()
+
+    recordProcessGoneCrash({ record } as never, gpuKill, dedupe)
+    recordProcessGoneCrash({ record } as never, event({ reason: 'killed', exitCode: 9 }), dedupe)
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(record).toHaveBeenCalledOnce()
   })
 })

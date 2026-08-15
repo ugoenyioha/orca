@@ -336,6 +336,43 @@ describe('shouldRecordProcessGoneCrash', () => {
       })
     ).toBe(true)
   })
+
+  it('does not report a renderer kill that shares a whole-process-tree teardown', () => {
+    // Windows end-task/1 and Linux SIGKILL/9 tree-kill shapes from the field.
+    expect(
+      shouldRecordProcessGoneCrash({
+        source: 'renderer',
+        processType: 'renderer',
+        reason: 'killed',
+        exitCode: 1,
+        expectedTeardown: 'none',
+        siblingChildKills: 2
+      })
+    ).toBe(false)
+    expect(
+      shouldRecordProcessGoneCrash({
+        source: 'renderer',
+        processType: 'renderer',
+        reason: 'killed',
+        exitCode: 9,
+        expectedTeardown: 'none',
+        siblingChildKills: 1
+      })
+    ).toBe(false)
+  })
+
+  it('keeps reporting non-killed renderer exits that coincide with child kills', () => {
+    expect(
+      shouldRecordProcessGoneCrash({
+        source: 'renderer',
+        processType: 'renderer',
+        reason: 'crashed',
+        exitCode: 5,
+        expectedTeardown: 'none',
+        siblingChildKills: 2
+      })
+    ).toBe(true)
+  })
 })
 
 describe('shouldRecoverRendererAfterProcessGone', () => {
@@ -388,5 +425,16 @@ describe('shouldRecoverRendererAfterProcessGone', () => {
         expectedTeardown: 'none'
       })
     ).toBe(false)
+  })
+
+  // Report suppression must not take the reload with it: field bundles show the
+  // renderer reloading and the same main process living on after child kills.
+  it('still recovers a renderer kill that shares a whole-process-tree teardown', () => {
+    expect(
+      shouldRecoverRendererAfterProcessGone({
+        reason: 'killed',
+        expectedTeardown: 'none'
+      })
+    ).toBe(true)
   })
 })

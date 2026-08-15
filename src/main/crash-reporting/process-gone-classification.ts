@@ -54,7 +54,8 @@ export function shouldRecordProcessGoneCrash({
   serviceName,
   reason,
   exitCode,
-  expectedTeardown
+  expectedTeardown,
+  siblingChildKills = 0
 }: {
   source: ProcessGoneSource
   processType?: string
@@ -62,6 +63,7 @@ export function shouldRecordProcessGoneCrash({
   reason: string
   exitCode: number | null
   expectedTeardown: ExpectedTeardownScope
+  siblingChildKills?: number
 }): boolean {
   // Why: GPU, Network Service, and Audio Service exits are recoverable Chromium
   // child-process churn; treating them as app crashes creates noisy user prompts.
@@ -72,6 +74,14 @@ export function shouldRecordProcessGoneCrash({
   // Real renderer OOMs and Chromium crashes should still reach crash reporting.
   if (reason !== 'killed') {
     return true
+  }
+  // Why: when the OS or user kills the whole process tree, the Chromium
+  // children die the same way milliseconds from the renderer. That is
+  // teardown, not a renderer crash, and the exit code alone cannot tell the
+  // two apart. Complements the session-end window, which end-task and
+  // Restart Manager kills never trigger.
+  if (source === 'renderer' && siblingChildKills > 0) {
+    return false
   }
   // Why: Electron reports expected Chromium teardown during reload/update as
   // `killed` + SIGTERM or Windows control termination statuses. Treat real
@@ -85,6 +95,13 @@ export function shouldRecordProcessGoneCrash({
   return !(source === 'renderer' && expectedTeardown === 'renderer-reload')
 }
 
+// Why: deliberately ignores sibling tree kills. Suppressing a *report* on that
+// signature costs one lost report; suppressing the *reload* strands the user in
+// a blank window with no prompt (scheduleRendererRecovery bails synchronously,
+// so the exhausted-recovery prompt never fires either). Field bundles show the
+// renderer reloading and the same main process living on for minutes after a
+// child kill, so the reload is the only thing that recovers those users. If the
+// tree really is dying, the main process is gone before the reload lands.
 export function shouldRecoverRendererAfterProcessGone({
   reason,
   expectedTeardown

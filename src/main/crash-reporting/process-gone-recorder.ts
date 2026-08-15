@@ -25,6 +25,11 @@ import {
   processGoneDedupe,
   type ProcessGoneDedupe
 } from './process-gone-dedupe'
+import {
+  countSiblingProcessTreeKills,
+  observeProcessGoneKill,
+  PROCESS_TREE_KILL_SETTLE_MS
+} from './process-tree-kill-window'
 import { getMainProcessLifecycleIdentity } from './main-process-lifecycle-identity'
 import { flushActiveSink, startSpan } from '../observability/tracer'
 
@@ -75,6 +80,23 @@ function persistFailureData(event: ProcessGoneCrashEvent, error: unknown) {
   }
 }
 
+function recordSuppressedProcessGone(event: ProcessGoneCrashEvent, siblingKills: number): void {
+  // Why: Chromium can crash-loop a recoverable child (network service seen at
+  // 1459/min) and each suppressed event costs a span plus a forced disk flush,
+  // which both floods the 30-entry ring and evicts the real pre-crash trail.
+  const suppressedData = processGoneBreadcrumbData(event)
+  recordCoalescedDurableCrashBreadcrumb({
+    name: 'process_gone_suppressed',
+    data: siblingKills > 0 ? { ...suppressedData, siblingKills } : suppressedData,
+    coalesceKey: suppressedProcessGoneCoalesceKey(suppressedData),
+    minIntervalMs: SUPPRESSED_PROCESS_GONE_COALESCE_MS
+  })
+}
+
+function siblingProcessTreeKillCount(event: ProcessGoneCrashEvent): number {
+  return countSiblingProcessTreeKills({ reason: event.reason, exitCode: event.exitCode })
+}
+
 export function recordProcessGoneCrash(
   store: CrashReportRecorderStore | null,
   event: ProcessGoneCrashEvent,
@@ -83,6 +105,15 @@ export function recordProcessGoneCrash(
   if (!isCrashReportReason(event.reason)) {
     return
   }
+  if (event.reason === 'killed') {
+    observeProcessGoneKill({
+      at: Date.now(),
+      source: event.source,
+      reason: event.reason,
+      exitCode: event.exitCode
+    })
+  }
+  const siblingKills = siblingProcessTreeKillCount(event)
   if (
     !shouldRecordProcessGoneCrash({
       source: event.source,
@@ -91,21 +122,37 @@ export function recordProcessGoneCrash(
         typeof event.details.serviceName === 'string' ? event.details.serviceName : undefined,
       reason: event.reason,
       exitCode: event.exitCode,
-      expectedTeardown: event.expectedTeardown
+      expectedTeardown: event.expectedTeardown,
+      siblingChildKills: siblingKills
     })
   ) {
-    // Why: Chromium can crash-loop a recoverable child (network service seen at
-    // 1459/min) and each suppressed event costs a span plus a forced disk flush,
-    // which both floods the 30-entry ring and evicts the real pre-crash trail.
-    const suppressedData = processGoneBreadcrumbData(event)
-    recordCoalescedDurableCrashBreadcrumb({
-      name: 'process_gone_suppressed',
-      data: suppressedData,
-      coalesceKey: suppressedProcessGoneCoalesceKey(suppressedData),
-      minIntervalMs: SUPPRESSED_PROCESS_GONE_COALESCE_MS
-    })
+    recordSuppressedProcessGone(event, siblingKills)
     return
   }
+  if (event.source === 'renderer' && event.reason === 'killed') {
+    // Why: a tree kill can reach the renderer ~100ms before its children, so
+    // let the sibling window settle rather than persisting a report the next
+    // child event would have retracted. If the main process dies inside the
+    // settle, the lost report is the tree-kill report we meant to drop.
+    const settleTimer = setTimeout(() => {
+      const settledSiblingKills = siblingProcessTreeKillCount(event)
+      if (settledSiblingKills > 0) {
+        recordSuppressedProcessGone(event, settledSiblingKills)
+        return
+      }
+      persistProcessGoneCrash(store, event, dedupe)
+    }, PROCESS_TREE_KILL_SETTLE_MS)
+    settleTimer.unref?.()
+    return
+  }
+  persistProcessGoneCrash(store, event, dedupe)
+}
+
+function persistProcessGoneCrash(
+  store: CrashReportRecorderStore | null,
+  event: ProcessGoneCrashEvent,
+  dedupe: ProcessGoneDedupe
+): void {
   if (!store) {
     recordDurableCrashBreadcrumb(
       'crash_report_store_unavailable',
