@@ -523,6 +523,22 @@ describe('recordProcessGoneCrash whole-process-tree kills', () => {
     expect(record).not.toHaveBeenCalled()
   })
 
+  // Literal on purpose: observed field offsets reach +0.10s, so a settle
+  // shrunk anywhere near that would race real tree kills into false reports;
+  // every symbolic-constant test stretches with the settle.
+  it('still suppresses a sibling arriving 200ms after the renderer kill', async () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    const dedupe = new ProcessGoneDedupe()
+    vi.useFakeTimers()
+
+    recordProcessGoneCrash({ record } as never, rendererKill, dedupe)
+    vi.advanceTimersByTime(200)
+    recordProcessGoneCrash({ record } as never, gpuKill, dedupe)
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(record).not.toHaveBeenCalled()
+  })
+
   it('ignores child kills that died with a different exit code', async () => {
     const record = vi.fn().mockResolvedValue({ id: 'report-1' })
     const dedupe = new ProcessGoneDedupe()
