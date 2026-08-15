@@ -62,6 +62,16 @@ describe('process gone diagnostics', () => {
     })
   })
 
+  it('keeps the first-enumerated process as Largest on an exact working-set tie', () => {
+    // Pins the > tie-break: >= would silently crown the last-enumerated tie.
+    const details = collectProcessGoneMetricDetails([
+      { pid: 10, type: 'Tab', memory: { workingSetSize: 1024 * 500 } },
+      { pid: 11, type: 'GPU', memory: { workingSetSize: 1024 * 500 } }
+    ])
+    expect(details.processMetricsLargestPid).toBe(10)
+    expect(details.processMetricsLargestType).toBe('Tab')
+  })
+
   it('flags a renderer-gone record whose live metrics carry only survivors', () => {
     // Field repro (report caf677f2): render-process-gone fires after the OS
     // process exits, so getAppMetrics() enumerates survivors only.
@@ -380,6 +390,31 @@ describe('process gone diagnostics', () => {
     // Suppressed attribution is not "nothing vanished": the record says a
     // prior report consumed the pid, so its PreGone mirrors are that era's.
     expect(second.processMetricsVanishedAlreadyReportedCount).toBe(1)
+  })
+
+  it('marks a later vanished pid ambiguous once an earlier crash consumed part of the era', () => {
+    // Two sampled renderers; crash #1 consumes 201 and leaves an unsampled
+    // respawn. When 202 then vanishes before any sweep, the respawn is at
+    // least as plausible a crasher as 202 — the confident-looking pid must
+    // carry the same ambiguity flag as the blind era.
+    appMetricsMock.mockReturnValue([
+      { pid: 201, type: 'Tab', memory: { workingSetSize: 1024 * 5000 } },
+      { pid: 202, type: 'Tab', memory: { workingSetSize: 1024 * 300 } }
+    ])
+    samplePreGoneProcessMetrics()
+    appMetricsMock.mockReturnValue([
+      { pid: 202, type: 'Tab', memory: { workingSetSize: 1024 * 300 } }
+    ])
+
+    const first = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(first.processMetricsVanishedPid).toBe(201)
+    expect(first.processMetricsVanishedAmbiguousWithEarlierCrash).toBeUndefined()
+
+    appMetricsMock.mockReturnValue([])
+    const second = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(second.processMetricsVanishedPid).toBe(202)
+    expect(second.processMetricsVanishedAlreadyReportedCount).toBe(1)
+    expect(second.processMetricsVanishedAmbiguousWithEarlierCrash).toBe(true)
   })
 
   it('keeps consumed attribution suppressed across a failed sweep', () => {

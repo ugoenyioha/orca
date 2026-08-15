@@ -13,6 +13,8 @@ describe('buildSuppressedProcessGoneBreadcrumbData', () => {
         details: {
           name: 'Network Service',
           serviceName: 'network.mojom.NetworkService',
+          // Distinct from processType: proves type comes from details.type.
+          type: 'GPU',
           nested: { ignored: true }
         }
       })
@@ -23,7 +25,8 @@ describe('buildSuppressedProcessGoneBreadcrumbData', () => {
       exitCode: 1,
       expectedTeardown: 'app-shutdown',
       name: 'Network Service',
-      serviceName: 'network.mojom.NetworkService'
+      serviceName: 'network.mojom.NetworkService',
+      type: 'GPU'
     })
   })
 

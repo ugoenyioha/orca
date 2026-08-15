@@ -313,9 +313,10 @@ export function buildProcessGoneCrashDetails(
         0
       )
     }
-    if (metricsBlindCrashBuckets.has(crashedBucket)) {
-      // Why: an earlier same-bucket crash in this era was recorded blind, so
-      // these Vanished numbers may belong to it rather than to this crash.
+    if (metricsBlindCrashBuckets.has(crashedBucket) || vanishedAlreadyReported > 0) {
+      // Why: an earlier same-bucket crash this era either consumed nothing (a
+      // blind record) or consumed pids and left an unsampled respawn — either
+      // way these Vanished numbers may describe a different process's exit.
       crashDetails.processMetricsVanishedAmbiguousWithEarlierCrash = true
     }
     for (const p of vanished) {
