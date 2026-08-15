@@ -30,6 +30,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Tab, TabGroup } from '../../../../shared/tab-types'
 import type { TerminalTab } from '../../../../shared/terminal-tab-types'
+import type { ActivityTerminalPortalTarget } from '../activity/activity-terminal-portal'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -37,6 +38,8 @@ const harness = vi.hoisted(() => ({
   worktreeId: 'repo::/cold-park-reveal-storm',
   /** Neutralizes the oscillating input: coverage stops reading watcher state. */
   coverageIgnoresWatcherState: false,
+  /** Models an uncoverable tab (pty-less leaf / no layout): coverage always denies. */
+  coverageDenied: false,
   /** Per-case park policy; {} keeps production 30s timing. */
   parkingOverrides: {} as Record<string, number>,
   coverageCalls: 0,
@@ -149,6 +152,9 @@ vi.mock('./terminal-parked-tab-watchers', async () => {
     // — state that watcher start/dispose and the pane lifecycle mutate.
     canWatcherCoverParkedTerminalTab: (_worktreeId: string, tab: { id: string }) => {
       harness.coverageCalls += 1
+      if (harness.coverageDenied) {
+        return false
+      }
       if (harness.coverageIgnoresWatcherState) {
         return true
       }
@@ -226,7 +232,10 @@ function unifiedTerminalTab(id: string): Tab {
 
 function renderRevealStormLayer(
   root: Root,
-  options: { activationDeferredMountTabIds: ReadonlySet<string> | null }
+  options: {
+    activationDeferredMountTabIds: ReadonlySet<string> | null
+    activityTerminalPortals?: ActivityTerminalPortalTarget[]
+  }
 ): unknown {
   const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
   let thrown: unknown = null
@@ -240,6 +249,9 @@ function renderRevealStormLayer(
             isWorktreeActive={true}
             coldParkTerminalPanes={false}
             activationDeferredMountTabIds={options.activationDeferredMountTabIds}
+            {...(options.activityTerminalPortals
+              ? { activityTerminalPortals: options.activityTerminalPortals }
+              : {})}
           />
         </StrictMode>
       )
@@ -257,6 +269,7 @@ describe('TerminalPaneOverlayLayer activation-deferred reveal storm', () => {
 
   beforeEach(() => {
     harness.coverageIgnoresWatcherState = false
+    harness.coverageDenied = false
     harness.parkingOverrides = {}
     harness.crumbs.length = 0
     harness.coverageCalls = 0
@@ -269,6 +282,8 @@ describe('TerminalPaneOverlayLayer activation-deferred reveal storm', () => {
     const tabs = TAB_IDS.map(terminalTab)
     const unifiedTabs = TAB_IDS.map(unifiedTerminalTab)
     harnessStore.setState({
+      settings: {},
+      runtimeStatusByEnvironmentId: new Map(),
       activeGroupIdByWorktree: { [harness.worktreeId]: GROUP_ID },
       groupsByWorktree: {
         [harness.worktreeId]: [
@@ -339,6 +354,123 @@ describe('TerminalPaneOverlayLayer activation-deferred reveal storm', () => {
     expect(thrown).toBeNull()
     expect(harness.syncCalls).toBeLessThan(10)
     expect(harness.watcherEntries.size).toBe(0)
+  })
+
+  // Why: the latch must hold the REAL verdict — an uncoverable tab (pty-less
+  // leaf / no layout) claimed by watchers would silently drop its bytes.
+  it('keeps an uncoverable deferred tab out of watcher ownership', () => {
+    harness.coverageDenied = true
+    root = createRoot(container)
+    const thrown = renderRevealStormLayer(root, {
+      activationDeferredMountTabIds: new Set([DEFERRED_TAB_ID])
+    })
+
+    expect(thrown).toBeNull()
+    expect(harness.watcherEntries.has(DEFERRED_TAB_ID)).toBe(false)
+    // The unparked tab mounts a pane instead of parking into darkness.
+    expect(harness.slotMounts).toBeGreaterThan(0)
+    expect(harness.syncCalls).toBeLessThan(10)
+  })
+
+  // Why: portal-hosted tabs render through Activity — watcher ownership there
+  // would double-attach the pty byte stream.
+  it('never claims a portal-hosted deferred tab for watchers', () => {
+    root = createRoot(container)
+    const portal = {
+      slotId: 'slot-1',
+      requestToken: 'req-1',
+      target: document.createElement('div'),
+      worktreeId: harness.worktreeId,
+      tabId: DEFERRED_TAB_ID,
+      paneKey: 'pane-1',
+      active: true
+    } as ActivityTerminalPortalTarget
+    const thrown = renderRevealStormLayer(root, {
+      activationDeferredMountTabIds: new Set([DEFERRED_TAB_ID]),
+      activityTerminalPortals: [portal]
+    })
+
+    expect(thrown).toBeNull()
+    expect(harness.watcherEntries.has(DEFERRED_TAB_ID)).toBe(false)
+  })
+
+  // Why: the latch may not outlive deferral — a stale FALSE surviving a
+  // reveal → re-defer cycle would leave the re-deferred tab unmounted with no
+  // watcher (zero-watcher darkness), the failure the coverage gate exists for.
+  it('re-evaluates fresh when a revealed tab is deferred again', () => {
+    harness.coverageDenied = true
+    root = createRoot(container)
+    // Deferred while uncoverable: latched FALSE, no watcher, pane mounts.
+    let thrown = renderRevealStormLayer(root, {
+      activationDeferredMountTabIds: new Set([DEFERRED_TAB_ID])
+    })
+    expect(thrown).toBeNull()
+    expect(harness.watcherEntries.has(DEFERRED_TAB_ID)).toBe(false)
+
+    // Revealed: leaves the deferred set, which prunes its latch entry.
+    thrown = renderRevealStormLayer(root, { activationDeferredMountTabIds: null })
+    expect(thrown).toBeNull()
+
+    // Re-deferred after coverage returns (same pty/generation/policy → same
+    // material key): the verdict must be re-asked, not replayed.
+    harness.coverageDenied = false
+    harness.coverageIgnoresWatcherState = true
+    thrown = renderRevealStormLayer(root, {
+      activationDeferredMountTabIds: new Set([DEFERRED_TAB_ID])
+    })
+    expect(thrown).toBeNull()
+    expect(harness.watcherEntries.has(DEFERRED_TAB_ID)).toBe(true)
+  })
+
+  // Why: the material key must be wired to the LIVE restore policy — the SSH
+  // kill switch and paired-runtime capability changes are the documented
+  // re-open edges, and each re-key must settle in one evaluation, not loop.
+  it('re-opens the latched verdict on restore-policy changes and settles', () => {
+    root = createRoot(container)
+    const thrown = renderRevealStormLayer(root, {
+      activationDeferredMountTabIds: new Set([DEFERRED_TAB_ID])
+    })
+    expect(thrown).toBeNull()
+    // Latched TRUE at deferral entry: watchers own the tab.
+    expect(harness.watcherEntries.has(DEFERRED_TAB_ID)).toBe(true)
+
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let policyThrow: unknown = null
+    try {
+      // SSH parking kill switch: re-keys the latch; the fresh evaluation sees
+      // the watcher-feedback verdict (false) and releases the tab.
+      act(() => {
+        harnessStore.setState({ settings: { terminalSshViewParking: false } })
+      })
+    } catch (error) {
+      policyThrow = error
+    }
+    consoleError.mockRestore()
+    expect(policyThrow).toBeNull()
+    expect(harness.watcherEntries.has(DEFERRED_TAB_ID)).toBe(false)
+
+    const syncCallsBeforePairedChange = harness.syncCalls
+    const consoleError2 = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let pairedThrow: unknown = null
+    try {
+      // Paired-runtime capability change: re-keys again; coverage now passes
+      // (no watcher entry) and the tab returns to watcher ownership.
+      act(() => {
+        harnessStore.setState({
+          runtimeStatusByEnvironmentId: new Map([
+            ['env-latch', { status: { capabilities: ['terminal.paired-parking.v1'] } }]
+          ])
+        })
+      })
+    } catch (error) {
+      pairedThrow = error
+    }
+    consoleError2.mockRestore()
+    expect(pairedThrow).toBeNull()
+    expect(harness.watcherEntries.has(DEFERRED_TAB_ID)).toBe(true)
+    // Each re-key settles instead of re-entering the storm.
+    expect(harness.syncCalls - syncCallsBeforePairedChange).toBeLessThan(10)
+    expect(harness.slotMounts).toBeLessThan(20)
   })
 
   // Field signature from crash 60d84e6d: churn crumbs with trigger=window
