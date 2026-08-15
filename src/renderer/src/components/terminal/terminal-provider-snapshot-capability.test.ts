@@ -250,13 +250,43 @@ describe('terminal provider snapshot capabilities', () => {
     expect(retryDelayMs).toBe(5 * 60_000)
   })
 
+  // Why same-reference: the hook's chain re-fires with the SAME memoized id
+  // array, so the unchanged-set early-out must yield to a due unknown retry —
+  // an unconditional same-identity bail would kill the chain after one backoff.
+  it('re-consults a due unknown on an identical live-set identity', async () => {
+    const livePtyIds = ['pty-1']
+    const resolve = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: 'pty-1', authoritative: null }])
+      .mockResolvedValueOnce([{ id: 'pty-1', authoritative: true }])
+
+    await synchronizeTerminalProviderSnapshotCapabilities(livePtyIds, resolve, 1_000)
+    const retryDelayMs = await synchronizeTerminalProviderSnapshotCapabilities(
+      livePtyIds,
+      resolve,
+      2_000
+    )
+
+    expect(resolve).toHaveBeenCalledTimes(2)
+    expect(retryDelayMs).toBeNull()
+    expect(terminalProviderHasAuthoritativeSnapshot('pty-1')).toBe(true)
+  })
+
   it('re-probes an unknown PTY from scratch after it closes and a new one appears', async () => {
     const resolve = vi.fn(async () => [{ id: 'gone-pty', authoritative: null }])
 
     await synchronizeTerminalProviderSnapshotCapabilities(['gone-pty'], resolve, 1_000)
-    await synchronizeTerminalProviderSnapshotCapabilities([], resolve, 2_000)
+    // Why null: pruning the closed pty's retry state must also stop the timer
+    // chain — a leaked entry would keep a phantom re-ask timer for the session.
+    await expect(
+      synchronizeTerminalProviderSnapshotCapabilities([], resolve, 2_000)
+    ).resolves.toBeNull()
     await synchronizeTerminalProviderSnapshotCapabilities(['gone-pty'], resolve, 2_001)
-
     expect(resolve).toHaveBeenCalledTimes(2)
+
+    // Why a third consult: the reappeared id restarts the 1s ladder — leaked
+    // attempts would resume the decayed cadence for a brand-new pty.
+    await synchronizeTerminalProviderSnapshotCapabilities(['gone-pty'], resolve, 3_001)
+    expect(resolve).toHaveBeenCalledTimes(3)
   })
 })

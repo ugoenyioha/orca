@@ -157,6 +157,25 @@ describe('useTerminalProviderSnapshotCapability', () => {
     hook.unmount()
   })
 
+  // Why: the timer chain is the sole recovery vehicle for unknown verdicts,
+  // and its refire reuses the same memoized id array — this pins the backoff
+  // return, the rescheduled timer, and the same-identity re-ask end to end.
+  it('polls an unknown pty again on the retry timer without any id churn', async () => {
+    vi.useFakeTimers()
+    resolveCapabilities
+      .mockResolvedValueOnce([{ id: 'ssh:target@@pty-1', authoritative: null }])
+      .mockResolvedValueOnce([{ id: 'ssh:target@@pty-1', authoritative: true }])
+    const hook = renderHook(() => useTerminalProviderSnapshotCapability(true))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(resolveCapabilities).toHaveBeenCalledOnce()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(resolveCapabilities).toHaveBeenCalledTimes(2)
+    expect(terminalProviderHasAuthoritativeSnapshot('ssh:target@@pty-1')).toBe(true)
+    hook.unmount()
+  })
+
   it('cancels an unknown-capability retry when the hook unmounts', async () => {
     vi.useFakeTimers()
     resolveCapabilities.mockResolvedValue([{ id: 'ssh:target@@pty-1', authoritative: null }])
