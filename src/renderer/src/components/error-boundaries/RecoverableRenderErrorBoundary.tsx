@@ -54,7 +54,9 @@ export class RecoverableRenderErrorBoundary extends React.Component<Props, State
 
   static getDerivedStateFromProps(props: Props, state: State): Partial<State> | null {
     if (props.resetKey !== state.resetKey) {
-      return { error: null, resetKey: props.resetKey }
+      // A reset abandons the old fallback, so a later error must not inherit its
+      // stalled-restart notice ("Try again" would name a button that isn't there).
+      return { error: null, resetKey: props.resetKey, relaunchStalled: false }
     }
     return null
   }

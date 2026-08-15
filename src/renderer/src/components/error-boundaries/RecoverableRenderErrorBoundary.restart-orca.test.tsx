@@ -172,6 +172,78 @@ describe('RecoverableRenderErrorBoundary Restart Orca button', () => {
     expect(container!.textContent).not.toContain("Restarting didn't complete.")
   })
 
+  it('does not leak the stalled-restart notice into a later error after a resetKey reset', async () => {
+    vi.useFakeTimers()
+    const relaunch = vi.fn<() => Promise<void>>().mockResolvedValue(undefined)
+    ;(window as unknown as { api: unknown }).api = { app: { relaunch } }
+
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    const renderWith = (resetKey: string, error: Error): void => {
+      act(() => {
+        root?.render(
+          <RecoverableRenderErrorBoundary
+            boundaryId="right-sidebar"
+            surface="right-sidebar"
+            resetKey={resetKey}
+          >
+            <ThrowingChild error={error} />
+          </RecoverableRenderErrorBoundary>
+        )
+      })
+    }
+
+    renderWith('doc-a', new LazyChunkLoadError(new SyntaxError("Unexpected token '}'")))
+    act(() => findRestartButton(container!)?.click())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RELAUNCH_SETTLE_GRACE_MS + 1)
+    })
+    expect(container!.textContent).toContain("Restarting didn't complete.")
+
+    // A reset abandons that fallback; the next, unrelated error must not carry
+    // a stalled-restart notice whose "Try again" has no Restart button.
+    renderWith('doc-b', new Error('ordinary render failure'))
+    expect(container!.querySelector('[role="alert"]')).not.toBeNull()
+    expect(findRestartButton(container!)).toBeNull()
+    expect(container!.textContent).not.toContain("Restarting didn't complete.")
+  })
+
+  it('drops the settle timer when the boundary unmounts around the relaunch', async () => {
+    vi.useFakeTimers()
+    let resolveRelaunch: () => void = () => undefined
+    const relaunch = vi.fn<() => Promise<void>>().mockReturnValue(
+      new Promise((resolve) => {
+        resolveRelaunch = resolve
+      })
+    )
+    ;(window as unknown as { api: unknown }).api = { app: { relaunch } }
+
+    // Unmount while the invoke is pending: the resolve must not schedule a timer
+    // into a torn-down instance.
+    renderBoundaryWith(new LazyChunkLoadError(new SyntaxError("Unexpected token '}'")))
+    act(() => findRestartButton(container!)?.click())
+    act(() => root?.unmount())
+    root = null
+    await act(async () => {
+      resolveRelaunch()
+      await Promise.resolve()
+    })
+    expect(vi.getTimerCount()).toBe(0)
+
+    // Unmount after the invoke resolved: the already-armed timer must be cleared.
+    container?.remove()
+    renderBoundaryWith(new LazyChunkLoadError(new SyntaxError("Unexpected token '}'")))
+    act(() => findRestartButton(container!)?.click())
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(vi.getTimerCount()).toBe(1)
+    act(() => root?.unmount())
+    root = null
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('re-enables the button when the pre-relaunch checkpoint refuses', async () => {
     let rejectRelaunch: (error: Error) => void = () => undefined
     const relaunch = vi.fn<() => Promise<void>>().mockReturnValue(
