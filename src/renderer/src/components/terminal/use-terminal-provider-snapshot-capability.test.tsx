@@ -34,6 +34,10 @@ describe('useTerminalProviderSnapshotCapability', () => {
   beforeEach(() => {
     clearTerminalProviderSnapshotCapabilities()
     resolveCapabilities.mockReset()
+    storeState.tabsByWorktree = {
+      'repo::worktree': [{ id: 'tab-1', ptyId: 'ssh:target@@pty-1' }]
+    }
+    storeState.ptyIdsByTabId = { 'tab-1': ['ssh:target@@pty-1'] }
     ;(window as unknown as { api: unknown }).api = {
       pty: { getAuthoritativeBufferSnapshotCapabilities: resolveCapabilities }
     }
@@ -91,6 +95,42 @@ describe('useTerminalProviderSnapshotCapability', () => {
 
     await waitFor(() =>
       expect(resolveCapabilities).toHaveBeenLastCalledWith(['ssh:target@@new-split'])
+    )
+    hook.unmount()
+  })
+
+  // Why per-map: every dep of the collect-key memo is individually
+  // load-bearing, and exhaustive-deps is only a warn in this repo — a dropped
+  // dep silently freezes the key for exactly that map's changes.
+  it('re-collects when each remaining collected store map changes', async () => {
+    resolveCapabilities.mockImplementation(async (ids: string[]) =>
+      ids.map((id) => ({ id, authoritative: true }))
+    )
+    const hook = renderHook(() => useTerminalProviderSnapshotCapability(true))
+    await waitFor(() => expect(resolveCapabilities).toHaveBeenCalledOnce())
+
+    storeState.pendingReconnectPtyIdByTabId = { 'tab-9': 'ssh:target@@reconnect' }
+    hook.rerender()
+    await waitFor(() =>
+      expect(resolveCapabilities).toHaveBeenLastCalledWith(['ssh:target@@reconnect'])
+    )
+
+    storeState.tabsByWorktree = {
+      'repo::worktree': [
+        ...storeState.tabsByWorktree['repo::worktree'],
+        { id: 'tab-2', ptyId: 'ssh:target@@tab-2' }
+      ]
+    }
+    hook.rerender()
+    await waitFor(() => expect(resolveCapabilities).toHaveBeenLastCalledWith(['ssh:target@@tab-2']))
+
+    storeState.ptyIdsByTabId = {
+      ...storeState.ptyIdsByTabId,
+      'tab-2': ['ssh:target@@tab-2-split']
+    }
+    hook.rerender()
+    await waitFor(() =>
+      expect(resolveCapabilities).toHaveBeenLastCalledWith(['ssh:target@@tab-2-split'])
     )
     hook.unmount()
   })

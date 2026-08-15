@@ -165,6 +165,35 @@ describe('terminal provider snapshot capabilities', () => {
     expect(terminalProviderHasAuthoritativeSnapshot('current-pty')).toBe(true)
   })
 
+  // Why 0, not null: null ends the caller's timer chain, but a superseding
+  // startup refresh ignores its own return value — if it leaves unknowns
+  // behind, the cancelled chain is the only re-ask scheduler left alive.
+  it('asks a superseded pass to re-check instead of ending its timer chain', async () => {
+    let resolveStale!: (value: { id: string; authoritative: boolean | null }[]) => void
+    const stale = new Promise<{ id: string; authoritative: boolean | null }[]>((resolve) => {
+      resolveStale = resolve
+    })
+    const first = synchronizeTerminalProviderSnapshotCapabilities(['pty-1'], () => stale, 1_000)
+    await synchronizeTerminalProviderSnapshotCapabilities(['pty-1', 'pty-2'], async () => [], 1_000)
+
+    resolveStale([{ id: 'pty-1', authoritative: true }])
+
+    await expect(first).resolves.toBe(0)
+  })
+
+  it('asks a superseded pass whose resolver rejected to re-check as well', async () => {
+    let rejectStale!: (reason: Error) => void
+    const stale = new Promise<{ id: string; authoritative: boolean | null }[]>((_, reject) => {
+      rejectStale = reject
+    })
+    const first = synchronizeTerminalProviderSnapshotCapabilities(['pty-1'], () => stale, 1_000)
+    await synchronizeTerminalProviderSnapshotCapabilities(['pty-1', 'pty-2'], async () => [], 1_000)
+
+    rejectStale(new Error('daemon unavailable'))
+
+    await expect(first).resolves.toBe(0)
+  })
+
   it('decays polling to a slow cadence for a PTY whose route never resolves', async () => {
     // Why not a permanent settle: the eviction-exemption path inherits the
     // verdict for life, so an unresolvable route stays exempt but re-askable.

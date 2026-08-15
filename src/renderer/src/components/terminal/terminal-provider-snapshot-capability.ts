@@ -152,7 +152,11 @@ export async function synchronizeTerminalProviderSnapshotCapabilities(
       resolved = await resolveSnapshotCapabilityBatch(resolve, batch)
     } catch {
       if (generation !== synchronizationGeneration) {
-        return null
+        // Why 0, not null: null ends a caller's timer chain, but the winning
+        // pass may leave unknowns behind with nobody scheduled to re-ask (the
+        // startup refresh ignores its return value). Re-checking immediately
+        // is cheap — the early-outs above collapse it when nothing is pending.
+        return 0
       }
       // Why: unknown capability must keep the pane mounted. Do not cache the
       // failure as supported; back off before retrying daemon startup.
@@ -162,7 +166,9 @@ export async function synchronizeTerminalProviderSnapshotCapabilities(
       continue
     }
     if (generation !== synchronizationGeneration) {
-      return null
+      // Why 0: see the catch above — a superseded pass must keep its caller's
+      // timer chain alive, or the 5-minute re-ask dies with it.
+      return 0
     }
     if (!resolved) {
       for (const id of missing.slice(offset)) {
