@@ -1,6 +1,10 @@
 import type { AiVaultScanIssue } from '../../shared/ai-vault-types'
 import type { ExecutionHostId } from '../../shared/execution-host'
-import { readVerifiedBoundedTextFile } from '../../shared/node-verified-bounded-text-file'
+import {
+  readVerifiedBoundedTextFile,
+  type VerifiedBoundedTextFileHandle,
+  type VerifiedBoundedTextFileIo
+} from '../../shared/node-verified-bounded-text-file'
 import {
   CURSOR_SIDECAR_MAX_BYTES,
   cursorBucketForCwd,
@@ -10,6 +14,14 @@ import {
   resolveCursorTargetPath
 } from './session-scanner-cursor-paths'
 import type { CursorCwdEvidence, FileWithMtime } from './session-scanner-types'
+import {
+  closeTranscriptHandle,
+  wslGatedFileHandleStat,
+  wslGatedLstat,
+  wslGatedOpenNoFollow,
+  wslGatedRead,
+  wslGatedRealpath
+} from '../native-chat/wsl-transcript-fs-access'
 
 export type CursorSidecarEvidence = {
   sessionId: string
@@ -56,13 +68,15 @@ export async function parseCursorSidecarFile(args: {
   executionHostId?: ExecutionHostId
   expectedRootRealPath?: string
   maxBytes?: number
+  signal?: AbortSignal
 }): Promise<CursorSidecarParseResult> {
   if (!args.expectedRootRealPath) {
     throw new Error('cursor_sidecar_root_unavailable')
   }
   const content = await readVerifiedBoundedTextFile(args.file.path, {
     expectedRootRealPath: args.expectedRootRealPath,
-    maxBytes: args.maxBytes ?? CURSOR_SIDECAR_MAX_BYTES
+    maxBytes: args.maxBytes ?? CURSOR_SIDECAR_MAX_BYTES,
+    io: cursorSidecarVerifiedReadIo(args.signal)
   })
   return {
     ...parseCursorSidecarContent({
@@ -80,6 +94,7 @@ export async function parseCursorSidecarFileCached(args: {
   executionHostId?: ExecutionHostId
   expectedRootRealPath?: string
   maxBytes?: number
+  signal?: AbortSignal
 }): Promise<CursorSidecarParseResult> {
   const cached = sidecarCache.get(args.file.path)
   if (
@@ -127,6 +142,22 @@ export async function parseCursorSidecarFileCached(args: {
     }
   }
   return { ...result, cacheHit: false }
+}
+
+function cursorSidecarVerifiedReadIo(signal?: AbortSignal): VerifiedBoundedTextFileIo {
+  return {
+    lstat: (path) => wslGatedLstat(path, 'scan', signal),
+    realpath: (path) => wslGatedRealpath(path, 'scan', signal),
+    open: async (path) => {
+      const handle = await wslGatedOpenNoFollow(path, 'scan', signal)
+      return {
+        close: () => closeTranscriptHandle(handle, path),
+        read: (buffer: Buffer, offset: number, length: number, position: number) =>
+          wslGatedRead(handle, path, buffer, offset, length, position, 'scan', signal),
+        stat: () => wslGatedFileHandleStat(handle, path, 'scan', signal)
+      } as VerifiedBoundedTextFileHandle
+    }
+  }
 }
 
 export function resetCursorSidecarParseCacheForTests(): void {

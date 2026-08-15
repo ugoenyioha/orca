@@ -67,7 +67,6 @@ describe('Cursor session scanner integration', () => {
       id: `local:cursor:${sessionId}`,
       cwd: workspace,
       filePath: join(sessionDir, 'meta.json'),
-      transcriptFilePath: transcriptPath,
       title: 'Scoped Cursor session',
       messageCount: 2,
       hasConversation: true

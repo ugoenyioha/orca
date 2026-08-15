@@ -98,8 +98,6 @@ export type AiVaultSession = {
   messageCount: number
   /** Provider evidence that content exists when an exact turn count is unavailable. */
   hasConversation?: boolean
-  /** Explicit transcript path; null means this producer has no readable transcript. */
-  transcriptFilePath?: string | null
   totalTokens: number
   previewMessages: AiVaultSessionPreviewMessage[]
   /** Older messages fell out of the newest-N window: the earliest preview turn

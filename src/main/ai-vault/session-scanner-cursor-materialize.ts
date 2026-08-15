@@ -60,8 +60,6 @@ export function materializeCursorSession(args: {
     legacySource?.legacy.updatedAt,
     legacySource?.legacy.modifiedAt
   ])
-  const transcriptFilePath = legacySource?.file.path ?? null
-
   return {
     id: buildAiVaultSessionId({
       executionHostId: args.executionHostId,
@@ -93,7 +91,6 @@ export function materializeCursorSession(args: {
     modifiedAt,
     messageCount: legacySource?.legacy.messageCount ?? 0,
     hasConversation: sidecars.some((candidate) => candidate.sidecar.hasConversation),
-    transcriptFilePath,
     totalTokens: legacySource?.legacy.totalTokens ?? 0,
     previewMessages: legacySource?.legacy.previewMessages ?? [],
     ...(legacySource?.legacy.lastUserPrompt

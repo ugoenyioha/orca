@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AiVaultScanIssue } from '../../shared/ai-vault-types'
 import {
-  CURSOR_REMOTE_MAX_AGGREGATE_BYTES,
+  CURSOR_SIDECAR_MAX_AGGREGATE_BYTES,
   CURSOR_SIDECAR_MAX_BYTES
 } from '../../shared/cursor-sidecar-scan'
 import { startSpan } from '../observability/tracer'
@@ -172,7 +172,7 @@ describe('Cursor verified-read budgets by storage context', () => {
     roots.push(root)
     const chatsRoot = join(root, '.cursor', 'chats')
     const fillerBytes = CURSOR_SIDECAR_MAX_BYTES - 100
-    const fillerCount = Math.floor(CURSOR_REMOTE_MAX_AGGREGATE_BYTES / fillerBytes)
+    const fillerCount = Math.floor(CURSOR_SIDECAR_MAX_AGGREGATE_BYTES / fillerBytes)
     const fillerFiles: FileWithMtime[] = []
     for (let index = 0; index < fillerCount; index += 1) {
       fillerFiles.push(
@@ -213,7 +213,7 @@ describe('Cursor verified-read budgets by storage context', () => {
       expect(discovery.cursorDiscoveryCounters?.boundedReads).toBe(fillerCount + 1)
       expect(discovery.cursorDiscoveryCounters?.returnedBytes).toBe(fillerTotal)
       expect(discovery.cursorDiscoveryCounters?.returnedBytes).toBeLessThanOrEqual(
-        CURSOR_REMOTE_MAX_AGGREGATE_BYTES
+        CURSOR_SIDECAR_MAX_AGGREGATE_BYTES
       )
       expect(discovery.cursorDiscoveryTruncated?.sidecarBytes).toBe(true)
       expect(issues).toContainEqual(expect.objectContaining({ message: 'file_too_large' }))
@@ -304,7 +304,7 @@ describe('Cursor verified-read budgets by storage context', () => {
     const root = await mkdtemp(join(tmpdir(), 'orca-cursor-storage-failed-reads-'))
     roots.push(root)
     const chatsRoot = join(root, '.cursor', 'chats')
-    const attemptLimit = CURSOR_REMOTE_MAX_AGGREGATE_BYTES / CURSOR_SIDECAR_MAX_BYTES
+    const attemptLimit = CURSOR_SIDECAR_MAX_AGGREGATE_BYTES / CURSOR_SIDECAR_MAX_BYTES
     const files = await Promise.all(
       Array.from({ length: attemptLimit + 2 }, (_, index) =>
         addSession(chatsRoot, `failed-${index}`, sidecarPayload(1_000), 1_000)
@@ -350,12 +350,12 @@ describe('Cursor verified-read budgets by storage context', () => {
     const nativeRoot = join(root, 'native', '.cursor', 'chats')
     const wslRoot = join(root, 'wsl', '.cursor', 'chats')
     const nativePayloadBytes = CURSOR_SIDECAR_MAX_BYTES - 44
-    const nativeFileCount = Math.floor(CURSOR_REMOTE_MAX_AGGREGATE_BYTES / nativePayloadBytes)
+    const nativeFileCount = Math.floor(CURSOR_SIDECAR_MAX_AGGREGATE_BYTES / nativePayloadBytes)
     const wslPayloadBytes = 5_000
     const nativePayload = sidecarPayload(nativePayloadBytes)
     const nativeFiles: FileWithMtime[] = []
     expect(nativePayloadBytes * nativeFileCount + wslPayloadBytes).toBeGreaterThan(
-      CURSOR_REMOTE_MAX_AGGREGATE_BYTES
+      CURSOR_SIDECAR_MAX_AGGREGATE_BYTES
     )
 
     for (let index = 0; index < nativeFileCount; index += 1) {

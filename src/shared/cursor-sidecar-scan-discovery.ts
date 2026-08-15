@@ -1,12 +1,8 @@
 import { createHash } from 'node:crypto'
-import type { Stats } from 'node:fs'
+import type { Dir, Stats } from 'node:fs'
 import { lstat, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
-import {
-  CURSOR_REMOTE_MAX_SESSION_DIRS,
-  type CursorSidecarScanRequest,
-  type CursorSidecarScanResponse
-} from './cursor-sidecar-scan'
+import type { CursorSidecarScanState } from './cursor-sidecar-scan'
 import {
   isCursorSidecarScanCancelledError,
   type CursorSidecarScanCancellation
@@ -44,10 +40,19 @@ export type CursorSidecarScanCaps = {
 
 type ScanArgs = {
   caps: CursorSidecarScanCaps
-  response: CursorSidecarScanResponse
+  response: CursorSidecarScanState
   cancellation: CursorSidecarScanCancellation
   resolveScopePaths?: (scopePath: string) => Promise<readonly string[]>
+  io: CursorSidecarScanIo
 }
+
+export type CursorSidecarScanIo = {
+  realpath: (path: string) => Promise<string>
+  lstat: (path: string) => Promise<Stats>
+  opendir?: (path: string) => Promise<Dir>
+}
+
+const defaultCursorSidecarScanIo: CursorSidecarScanIo = { realpath, lstat }
 
 export type CursorSidecarScanCandidate = Bucket & {
   sessionId: string
@@ -57,21 +62,24 @@ export type CursorSidecarScanCandidate = Bucket & {
 }
 
 export async function discoverCursorSidecarCandidates(args: {
-  request: CursorSidecarScanRequest
+  chatsRoot: string
+  scopePaths: readonly string[]
   caps: CursorSidecarScanCaps
-  response: CursorSidecarScanResponse
+  response: CursorSidecarScanState
   cancellation: CursorSidecarScanCancellation
   resolveScopePaths?: (scopePath: string) => Promise<readonly string[]>
+  io?: CursorSidecarScanIo
   // Why: WSL scopes are Linux paths after UNC conversion while process.platform
   // remains win32; path flavor must follow the storage context, not the host OS.
   pathPlatform?: NodeJS.Platform
 }): Promise<{ rootRealPath: string; candidates: CursorSidecarScanCandidate[] } | null> {
+  const scanArgs: ScanArgs = { ...args, io: args.io ?? defaultCursorSidecarScanIo }
   const pathPlatform = args.pathPlatform ?? process.platform
-  const chatsRoot = args.request.chatsRoot
+  const chatsRoot = args.chatsRoot
   let rootRealPath: string
   args.cancellation.throwIfCancelled()
   try {
-    rootRealPath = await realpath(chatsRoot)
+    rootRealPath = await scanArgs.io.realpath(chatsRoot)
   } catch (error) {
     rethrowCancel(error)
     args.cancellation.throwIfCancelled()
@@ -83,25 +91,26 @@ export async function discoverCursorSidecarCandidates(args: {
   // First enumeration-phase cancel check (after root resolve, before walks).
   args.cancellation.throwIfCancelled()
 
-  const direct = await scopeBuckets(args.request, chatsRoot, pathPlatform, args)
-  const enumerated = await enumeratedBuckets(chatsRoot, direct, args)
+  const direct = await scopeBuckets(args.scopePaths, chatsRoot, pathPlatform, scanArgs)
+  const enumerated = await enumeratedBuckets(chatsRoot, direct, scanArgs)
   const sessions = await retainCursorSidecarSessions({
     buckets: [...direct.values(), ...enumerated],
     sessionLimit: args.caps.sessions,
     response: args.response,
-    cancellation: args.cancellation
+    cancellation: args.cancellation,
+    io: scanArgs.io
   })
-  return { rootRealPath, candidates: await eligibleCandidates(sessions, args) }
+  return { rootRealPath, candidates: await eligibleCandidates(sessions, scanArgs) }
 }
 
 async function scopeBuckets(
-  request: CursorSidecarScanRequest,
+  scopePaths: readonly string[],
   chatsRoot: string,
   pathPlatform: NodeJS.Platform,
   args: ScanArgs
 ): Promise<Map<string, Bucket>> {
   // Truncation is measured on the full unique list before the cap slice.
-  const paths = [...new Set(request.scopePaths.map((value) => value.trim()).filter(Boolean))].sort()
+  const paths = [...new Set(scopePaths.map((value) => value.trim()).filter(Boolean))].sort()
   args.response.truncated.scopePaths = paths.length > args.caps.scopes
   const cwds = new Set<string>()
   for (const scopePath of paths.slice(0, args.caps.scopes)) {
@@ -119,8 +128,7 @@ async function scopeBuckets(
     args.cancellation.throwIfCancelled()
   }
   const buckets = new Map<string, Bucket>()
-  args.response.scopeCwds = [...cwds].sort()
-  for (const cwd of args.response.scopeCwds) {
+  for (const cwd of [...cwds].sort()) {
     // Cursor names its bucket dirs md5(cwd); this mirrors that, not a security primitive.
     const name = createHash('md5').update(cwd).digest('hex')
     buckets.set(name, { name, path: join(chatsRoot, name), scopeCwd: cwd })
@@ -146,7 +154,8 @@ async function enumeratedBuckets(
         !entry.isSymbolicLink() &&
         BUCKET_PATTERN.test(name) &&
         !direct.has(name),
-      onDirent: createDirentCancelChecker(args.cancellation)
+      onDirent: createDirentCancelChecker(args.cancellation),
+      opendir: args.io.opendir
     })
     args.cancellation.throwIfCancelled()
     args.response.truncated.buckets = truncated
@@ -189,7 +198,10 @@ async function inspectSession(
   const metaPath = join(sessionDir, 'meta.json')
   try {
     args.response.counters.fileLstat += 2
-    const [meta, store] = await Promise.all([lstat(metaPath), lstat(join(sessionDir, 'store.db'))])
+    const [meta, store] = await Promise.all([
+      args.io.lstat(metaPath),
+      args.io.lstat(join(sessionDir, 'store.db'))
+    ])
     if (!meta.isFile() || meta.isSymbolicLink() || !store.isFile() || store.isSymbolicLink()) {
       return null
     }
@@ -252,7 +264,7 @@ function retainByNewestThenAggregate(
   const retained: CursorSidecarScanCandidate[] = []
   let aggregateBytes = 0
   for (const candidate of prioritized) {
-    if (retained.length >= CURSOR_REMOTE_MAX_SESSION_DIRS) {
+    if (retained.length >= args.caps.sessions) {
       args.response.truncated.sessionDirs = true
       break
     }
@@ -282,7 +294,7 @@ function rethrowCancel(error: unknown): void {
   }
 }
 
-function addIssue(response: CursorSidecarScanResponse, path: string, error: unknown): void {
+function addIssue(response: CursorSidecarScanState, path: string, error: unknown): void {
   response.issues.push({
     path,
     message: error instanceof Error ? error.message.slice(0, 1_024) : 'Cursor scan failed.'

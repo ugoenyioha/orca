@@ -10,6 +10,21 @@ const STRICT_UTF8_DECODER = new TextDecoder('utf-8', { fatal: true, ignoreBOM: t
 export type VerifiedBoundedTextFileOptions = {
   maxBytes: number
   expectedRootRealPath: string
+  io?: VerifiedBoundedTextFileIo
+}
+
+export type VerifiedBoundedTextFileHandle = Pick<FileHandle, 'close' | 'read' | 'stat'>
+
+export type VerifiedBoundedTextFileIo = {
+  realpath: (path: string) => Promise<string>
+  lstat: (path: string) => Promise<Stats>
+  open: (path: string) => Promise<VerifiedBoundedTextFileHandle>
+}
+
+const defaultVerifiedBoundedTextFileIo: VerifiedBoundedTextFileIo = {
+  realpath,
+  lstat,
+  open: (filePath) => open(filePath, constants.O_RDONLY | OPEN_NOFOLLOW)
 }
 
 export async function readVerifiedBoundedTextFile(
@@ -17,13 +32,14 @@ export async function readVerifiedBoundedTextFile(
   options: VerifiedBoundedTextFileOptions
 ): Promise<string> {
   const maxBytes = validatedByteLimit(options.maxBytes)
-  const resolvedFilePath = await realpath(filePath)
+  const io = options.io ?? defaultVerifiedBoundedTextFileIo
+  const resolvedFilePath = await io.realpath(filePath)
   if (!isPathInsideRoot(options.expectedRootRealPath, resolvedFilePath)) {
     throw new Error('verified_file_outside_root')
   }
-  const lexicalRoot = await findLexicalRoot(filePath, options.expectedRootRealPath)
-  const beforeOpen = await assertRegularDescendantPath(lexicalRoot, filePath)
-  const handle = await openNoFollow(filePath)
+  const lexicalRoot = await findLexicalRoot(filePath, options.expectedRootRealPath, io)
+  const beforeOpen = await assertRegularDescendantPath(lexicalRoot, filePath, io)
+  const handle = await openNoFollow(filePath, io)
   try {
     const opened = await handle.stat()
     if (!opened.isFile() || !sameFileIdentity(beforeOpen, opened)) {
@@ -40,10 +56,14 @@ export async function readVerifiedBoundedTextFile(
   }
 }
 
-async function findLexicalRoot(filePath: string, expectedRootRealPath: string): Promise<string> {
+async function findLexicalRoot(
+  filePath: string,
+  expectedRootRealPath: string,
+  io: VerifiedBoundedTextFileIo
+): Promise<string> {
   let candidate = dirname(filePath)
   for (let depth = 0; depth < 256; depth += 1) {
-    if (samePath(await realpath(candidate), expectedRootRealPath)) {
+    if (samePath(await io.realpath(candidate), expectedRootRealPath)) {
       return candidate
     }
     const parent = dirname(candidate)
@@ -55,7 +75,11 @@ async function findLexicalRoot(filePath: string, expectedRootRealPath: string): 
   throw new Error('verified_file_outside_root')
 }
 
-async function assertRegularDescendantPath(rootPath: string, filePath: string): Promise<Stats> {
+async function assertRegularDescendantPath(
+  rootPath: string,
+  filePath: string,
+  io: VerifiedBoundedTextFileIo
+): Promise<Stats> {
   const segments = relative(rootPath, filePath).split(sep).filter(Boolean)
   if (segments.length === 0 || segments.some((segment) => segment === '..')) {
     throw new Error('verified_file_outside_root')
@@ -63,7 +87,7 @@ async function assertRegularDescendantPath(rootPath: string, filePath: string): 
   let current = rootPath
   for (let index = 0; index < segments.length; index += 1) {
     current = join(current, segments[index])
-    const stats = await lstat(current)
+    const stats = await io.lstat(current)
     if (stats.isSymbolicLink()) {
       throw new Error('verified_file_changed')
     }
@@ -80,7 +104,10 @@ async function assertRegularDescendantPath(rootPath: string, filePath: string): 
   throw new Error('verified_file_not_regular')
 }
 
-export async function readBoundedFileHandle(handle: FileHandle, maxBytes: number): Promise<Buffer> {
+export async function readBoundedFileHandle(
+  handle: Pick<FileHandle, 'read'>,
+  maxBytes: number
+): Promise<Buffer> {
   const safeLimit = validatedByteLimit(maxBytes)
   const buffer = Buffer.alloc(safeLimit + 1)
   let totalBytesRead = 0
@@ -102,9 +129,12 @@ export async function readBoundedFileHandle(handle: FileHandle, maxBytes: number
   return buffer.subarray(0, totalBytesRead)
 }
 
-export async function openNoFollow(filePath: string): Promise<FileHandle> {
+export async function openNoFollow(
+  filePath: string,
+  io: VerifiedBoundedTextFileIo = defaultVerifiedBoundedTextFileIo
+): Promise<VerifiedBoundedTextFileHandle> {
   try {
-    return await open(filePath, constants.O_RDONLY | OPEN_NOFOLLOW)
+    return await io.open(filePath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ELOOP') {
       throw new Error('verified_file_changed')

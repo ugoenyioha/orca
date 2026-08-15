@@ -1,13 +1,11 @@
-import { lstat, realpath } from 'node:fs/promises'
 import type { AiVaultScanIssue } from '../../shared/ai-vault-types'
 import {
-  CURSOR_REMOTE_MAX_AGGREGATE_BYTES,
-  CURSOR_REMOTE_MAX_BUCKETS,
-  CURSOR_REMOTE_MAX_SCOPE_PATHS,
-  CURSOR_REMOTE_MAX_SESSION_DIRS,
+  CURSOR_SIDECAR_MAX_AGGREGATE_BYTES,
+  CURSOR_SIDECAR_MAX_BUCKETS,
   CURSOR_SIDECAR_MAX_BYTES,
-  CURSOR_SIDECAR_SCAN_VERSION,
-  type CursorSidecarScanResponse
+  CURSOR_SIDECAR_MAX_SCOPE_PATHS,
+  CURSOR_SIDECAR_MAX_SESSION_DIRS,
+  type CursorSidecarScanState
 } from '../../shared/cursor-sidecar-scan'
 import {
   cursorSidecarScanCancellationFromSignal,
@@ -15,23 +13,26 @@ import {
   type CursorSidecarScanCaps
 } from '../../shared/cursor-sidecar-scan-discovery'
 import type { CursorCwdEvidence, FileWithMtime } from './session-scanner-types'
-import { errorMessage } from './session-scanner-values'
-import { cursorSessionStorePath } from './session-scanner-cursor-paths'
+import {
+  wslGatedLstat,
+  wslGatedOpendir,
+  wslGatedRealpath
+} from '../native-chat/wsl-transcript-fs-access'
 
 export type LocalCursorSidecarDiscovery = {
   rootRealPath: string | null
   files: FileWithMtime[]
   evidenceByPath: Map<string, CursorCwdEvidence>
-  counters: CursorSidecarScanResponse['counters']
-  truncated: CursorSidecarScanResponse['truncated']
+  counters: CursorSidecarScanState['counters']
+  truncated: CursorSidecarScanState['truncated']
 }
 
 const LOCAL_CAPS: CursorSidecarScanCaps = {
-  buckets: CURSOR_REMOTE_MAX_BUCKETS,
-  sessions: CURSOR_REMOTE_MAX_SESSION_DIRS,
-  scopes: CURSOR_REMOTE_MAX_SCOPE_PATHS,
+  buckets: CURSOR_SIDECAR_MAX_BUCKETS,
+  sessions: CURSOR_SIDECAR_MAX_SESSION_DIRS,
+  scopes: CURSOR_SIDECAR_MAX_SCOPE_PATHS,
   sidecarBytes: CURSOR_SIDECAR_MAX_BYTES,
-  aggregateBytes: CURSOR_REMOTE_MAX_AGGREGATE_BYTES
+  aggregateBytes: CURSOR_SIDECAR_MAX_AGGREGATE_BYTES
 }
 
 export async function discoverLocalCursorSidecarsBounded(args: {
@@ -45,21 +46,18 @@ export async function discoverLocalCursorSidecarsBounded(args: {
   const response = emptyLocalScanResponse()
   // Pass the full scope list so discovery can mark truncation before capping.
   const discovery = await discoverCursorSidecarCandidates({
-    request: {
-      version: CURSOR_SIDECAR_SCAN_VERSION,
-      chatsRoot: args.chatsDir,
-      scopePaths: [...args.scopePaths],
-      maxBuckets: LOCAL_CAPS.buckets,
-      maxSessionDirs: LOCAL_CAPS.sessions,
-      maxScopePaths: LOCAL_CAPS.scopes,
-      maxSidecarBytes: LOCAL_CAPS.sidecarBytes,
-      maxAggregateBytes: LOCAL_CAPS.aggregateBytes
-    },
+    chatsRoot: args.chatsDir,
+    scopePaths: args.scopePaths,
     caps: LOCAL_CAPS,
     response,
     cancellation: cursorSidecarScanCancellationFromSignal(args.signal),
     pathPlatform: args.pathPlatform,
-    resolveScopePaths: args.resolveScopePaths
+    resolveScopePaths: args.resolveScopePaths,
+    io: {
+      lstat: (path) => wslGatedLstat(path, 'scan', args.signal),
+      opendir: (path) => wslGatedOpendir(path, 'scan', args.signal),
+      realpath: (path) => wslGatedRealpath(path, 'scan', args.signal)
+    }
   })
 
   for (const issue of response.issues) {
@@ -118,94 +116,8 @@ export async function discoverLocalCursorSidecarsBounded(args: {
   }
 }
 
-export async function localCursorRootRealPath(
-  chatsDir: string,
-  issues: AiVaultScanIssue[]
-): Promise<string | null> {
-  try {
-    return await realpath(chatsDir)
-  } catch (error) {
-    if (!isMissingCursorPathError(error)) {
-      issues.push({ agent: 'cursor', path: chatsDir, message: errorMessage(error) })
-    }
-    return null
-  }
-}
-
-export async function cursorLocalFileMetadata(filePath: string): Promise<FileWithMtime | null> {
-  try {
-    const fileStat = await lstat(filePath)
-    if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
-      return null
-    }
-    return {
-      path: filePath,
-      mtimeMs: fileStat.mtimeMs,
-      modifiedAt: fileStat.mtime.toISOString(),
-      sizeBytes: fileStat.size,
-      dev: fileStat.dev,
-      ino: fileStat.ino,
-      nlink: fileStat.nlink
-    }
-  } catch {
-    return null
-  }
-}
-
-export async function validateLocalCursorSidecars(
-  files: readonly FileWithMtime[],
-  issues: AiVaultScanIssue[]
-): Promise<FileWithMtime[]> {
-  const retained: FileWithMtime[] = []
-  for (const file of files) {
-    try {
-      const [metaStat, storeStat] = await Promise.all([
-        lstat(file.path),
-        lstat(cursorSessionStorePath(file.path))
-      ])
-      if (
-        !metaStat.isFile() ||
-        metaStat.isSymbolicLink() ||
-        !storeStat.isFile() ||
-        storeStat.isSymbolicLink()
-      ) {
-        continue
-      }
-      if (metaStat.size > CURSOR_SIDECAR_MAX_BYTES) {
-        issues.push({
-          agent: 'cursor',
-          path: file.path,
-          message: 'Cursor session metadata exceeds the read limit.'
-        })
-        continue
-      }
-      retained.push({
-        ...file,
-        sizeBytes: metaStat.size,
-        cursorStoreMtimeMs: storeStat.mtimeMs
-      })
-    } catch (error) {
-      if (!isMissingCursorPathError(error)) {
-        issues.push({ agent: 'cursor', path: file.path, message: errorMessage(error) })
-      }
-    }
-  }
-  return retained
-}
-
-export function isMissingCursorPathError(error: unknown): boolean {
-  const code =
-    error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
-      ? error.code
-      : null
-  return code === 'ENOENT' || code === 'ENOTDIR'
-}
-
-function emptyLocalScanResponse(): CursorSidecarScanResponse {
+function emptyLocalScanResponse(): CursorSidecarScanState {
   return {
-    version: CURSOR_SIDECAR_SCAN_VERSION,
-    scopeCwds: [],
-    sidecars: [],
     issues: [],
     counters: {
       rootReaddir: 0,

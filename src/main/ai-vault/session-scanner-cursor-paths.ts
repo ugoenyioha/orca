@@ -136,10 +136,6 @@ export function cursorContextPathForHash(
   return candidates[0] ?? null
 }
 
-export function cursorSessionStorePath(metaPath: string): string {
-  return join(metaPath, '..', 'store.db')
-}
-
 export function cursorSessionActivityMtimeMs(file: FileWithMtime): number {
   return Math.max(file.mtimeMs, file.cursorStoreMtimeMs ?? 0)
 }

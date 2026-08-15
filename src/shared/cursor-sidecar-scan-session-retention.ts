@@ -1,5 +1,5 @@
-import { lstat } from 'node:fs/promises'
-import type { CursorSidecarScanResponse } from './cursor-sidecar-scan'
+import type { CursorSidecarScanState } from './cursor-sidecar-scan'
+import type { CursorSidecarScanIo } from './cursor-sidecar-scan-discovery'
 import {
   isCursorSidecarScanCancelledError,
   type CursorSidecarScanCancellation
@@ -19,8 +19,9 @@ export type CursorSidecarScanSession = CursorSidecarScanBucket & { sessionId: st
 type RetentionArgs = {
   buckets: readonly CursorSidecarScanBucket[]
   sessionLimit: number
-  response: CursorSidecarScanResponse
+  response: CursorSidecarScanState
   cancellation: CursorSidecarScanCancellation
+  io: CursorSidecarScanIo
 }
 
 export async function retainCursorSidecarSessions(
@@ -155,7 +156,7 @@ async function listBucketSessions(
   try {
     if (bucket.scopeCwd) {
       args.response.counters.fileLstat++
-      const stats = await lstat(bucket.path)
+      const stats = await args.io.lstat(bucket.path)
       if (!stats.isDirectory() || stats.isSymbolicLink()) {
         return { bucket, names: [], truncated: false }
       }
@@ -166,7 +167,8 @@ async function listBucketSessions(
       limit: Math.max(0, limit),
       maxEntriesExamined,
       accept: (name, entry) => entry.isDirectory() && !entry.isSymbolicLink() && safeBasename(name),
-      onDirent: createDirentCancelChecker(args.cancellation)
+      onDirent: createDirentCancelChecker(args.cancellation),
+      opendir: args.io.opendir
     })
     return { bucket, names: listed.names, truncated: listed.truncated }
   } catch (error) {
@@ -190,7 +192,7 @@ function createDirentCancelChecker(cancellation: CursorSidecarScanCancellation):
   }
 }
 
-function addIssue(response: CursorSidecarScanResponse, path: string, error: unknown): void {
+function addIssue(response: CursorSidecarScanState, path: string, error: unknown): void {
   response.issues.push({
     path,
     message: error instanceof Error ? error.message.slice(0, 1_024) : 'Cursor scan failed.'

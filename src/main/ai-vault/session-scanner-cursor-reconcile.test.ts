@@ -118,7 +118,6 @@ describe('reconcileCursorCandidates', () => {
       cwd: '/repo',
       branch: 'feature',
       filePath: sidecarCandidate.file.path,
-      transcriptFilePath: legacyCandidate.file.path,
       messageCount: 2,
       hasConversation: true,
       previewMessages: [{ role: 'user', text: 'hello', timestamp: null }]
@@ -151,8 +150,7 @@ describe('reconcileCursorCandidates', () => {
     expect(result.sessions).toHaveLength(3)
     expect(result.sessions.filter((session) => session.cwd !== null)).toHaveLength(2)
     expect(result.sessions.find((session) => session.filePath.endsWith('.jsonl'))).toMatchObject({
-      cwd: null,
-      transcriptFilePath: expect.stringContaining('.jsonl')
+      cwd: null
     })
     expect(result.issues.map((issue) => issue.message)).toEqual(
       expect.arrayContaining([
@@ -203,8 +201,7 @@ describe('reconcileCursorCandidates', () => {
       expect(localeCompare).not.toHaveBeenCalled()
       expect(result.sessions[0]).toMatchObject({
         branch: 'decomposed',
-        title: 'decomposed',
-        transcriptFilePath: decomposedLegacy.file.path
+        title: 'decomposed'
       })
     } finally {
       localeCompare.mockRestore()

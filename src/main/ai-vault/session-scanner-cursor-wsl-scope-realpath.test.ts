@@ -13,6 +13,25 @@ afterEach(async () => {
 })
 
 describe('WSL Cursor scope realpath resolution', () => {
+  it('does not swallow cancellation during scope resolution', async () => {
+    const controller = new AbortController()
+    const realpathPath = vi.fn(async () => {
+      controller.abort()
+      throw controller.signal.reason
+    })
+
+    await expect(
+      resolveLocalSidecarScopePaths({
+        realpathPath,
+        scopePath: '\\\\wsl.localhost\\Ubuntu\\home\\ada\\repo',
+        storageContextKey: 'wsl:Ubuntu',
+        targetPlatform: 'linux',
+        signal: controller.signal
+      })
+    ).rejects.toThrow('cursor_sidecar_scan_cancelled')
+    expect(realpathPath).toHaveBeenCalledOnce()
+  })
+
   it('realpaths the raw UNC path before hashing its resolved Linux cwd', async () => {
     const root = await mkdtemp(join(tmpdir(), 'orca-cursor-wsl-realpath-'))
     roots.push(root)

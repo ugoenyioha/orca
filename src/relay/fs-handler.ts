@@ -28,7 +28,6 @@ import {
 } from './fs-handler-terminal-artifact'
 import { RelayStreamRegistry } from './fs-stream-registry'
 import { scanWorkspaceSpaceDirectory } from './workspace-space-scan'
-import { scanCursorSidecars } from './cursor-sidecar-scan'
 import { buildRelayCommandEnv } from './relay-command-env'
 import { assertNoClobberRenameDestinationAvailable } from '../shared/filesystem-rename-collision'
 import { RipgrepUnavailableError } from '../shared/ripgrep-process-availability'
@@ -119,9 +118,6 @@ export class FsHandler {
     this.dispatcher.onRequest('fs.search', (p) => this.search(p))
     this.dispatcher.onRequest('fs.listFiles', (p, c) => this.listFiles(p, c))
     this.dispatcher.onRequest('fs.workspaceSpaceScan', (p, c) => this.workspaceSpaceScan(p, c))
-    this.dispatcher.onRequest('fs.scanCursorSidecars', (p, context) =>
-      scanCursorSidecars(p, context)
-    )
     this.dispatcher.onRequest('fs.watch', (p, context) =>
       this.watchRegistry.watch(
         expandTilde(p.rootPath as string),

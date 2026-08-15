@@ -1,5 +1,5 @@
 import {
-  CURSOR_REMOTE_MAX_AGGREGATE_BYTES,
+  CURSOR_SIDECAR_MAX_AGGREGATE_BYTES,
   CURSOR_SIDECAR_MAX_BYTES
 } from '../../shared/cursor-sidecar-scan'
 import {
@@ -29,7 +29,7 @@ export async function reserveCursorVerifiedReadBytes(
 ): Promise<number | null> {
   while (true) {
     throwIfAiVaultScanCancelled(signal)
-    const remainingBytes = CURSOR_REMOTE_MAX_AGGREGATE_BYTES - budget.chargedBytes
+    const remainingBytes = CURSOR_SIDECAR_MAX_AGGREGATE_BYTES - budget.chargedBytes
     const availableBytes = remainingBytes - budget.reservedBytes
     if (availableBytes > 0 && estimatedBytes <= availableBytes) {
       const reservedBytes = Math.min(CURSOR_SIDECAR_MAX_BYTES, availableBytes)
@@ -73,7 +73,7 @@ export function settleCursorVerifiedReadReservation(
   chargedBytes: number
 ): void {
   budget.reservedBytes -= reservedBytes
-  const available = CURSOR_REMOTE_MAX_AGGREGATE_BYTES - budget.chargedBytes - budget.reservedBytes
+  const available = CURSOR_SIDECAR_MAX_AGGREGATE_BYTES - budget.chargedBytes - budget.reservedBytes
   budget.chargedBytes += Math.min(chargedBytes, Math.max(0, available))
   budget.notifyChanged()
   let notifyChanged = (): void => undefined

@@ -1,7 +1,7 @@
 import { isAiVaultScanCancelledError, type AiVaultScanIssue } from '../../shared/ai-vault-types'
 import type { ExecutionHostId } from '../../shared/execution-host'
 import {
-  CURSOR_REMOTE_MAX_AGGREGATE_BYTES,
+  CURSOR_SIDECAR_MAX_AGGREGATE_BYTES,
   CURSOR_SIDECAR_MAX_BYTES
 } from '../../shared/cursor-sidecar-scan'
 import { isCursorSidecarScanCancelledError } from '../../shared/cursor-sidecar-scan-discovery'
@@ -252,14 +252,15 @@ async function parseSidecarWithAggregateCap(
       targetPlatform: candidate.cursorTargetPlatform,
       executionHostId: args.executionHostId,
       expectedRootRealPath: candidate.cursorExpectedRootRealPath,
-      maxBytes: reservedBytes
+      maxBytes: reservedBytes,
+      signal: args.signal
     })
   } catch (error) {
     settleCursorVerifiedReadReservation(
       budget,
       reservedBytes,
       isVerifiedReadTooLargeError(error)
-        ? CURSOR_REMOTE_MAX_AGGREGATE_BYTES
+        ? CURSOR_SIDECAR_MAX_AGGREGATE_BYTES
         : CURSOR_SIDECAR_MAX_BYTES
     )
     if (storage) {

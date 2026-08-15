@@ -43,6 +43,7 @@ export type StreamDirectoryNamesOptions = {
   onDirent?: () => void
   /** Hard stop after this many dirents; default CURSOR_DIR_MAX_ENTRIES_EXAMINED. */
   maxEntriesExamined?: number
+  opendir?: (path: string) => Promise<Dir>
 }
 
 type StreamDirectoryIo = {
@@ -81,7 +82,7 @@ export async function streamDirectoryNames(
   }
 
   try {
-    const directory = await streamDirectoryIo.opendir(dirPath)
+    const directory = await (options.opendir ?? streamDirectoryIo.opendir)(dirPath)
     try {
       return await examineDirectoryStream(directory, visit, options, maxEntries)
     } finally {
@@ -108,6 +109,7 @@ export async function listLexicographicDirectoryNames(args: {
   accept: (name: string, entry: Dirent) => boolean
   maxEntriesExamined?: number
   onDirent?: () => void
+  opendir?: (path: string) => Promise<Dir>
 }): Promise<{ names: string[]; truncated: boolean; entriesExamined: number }> {
   if (args.limit <= 0) {
     return { names: [], truncated: true, entriesExamined: 0 }
@@ -126,7 +128,8 @@ export async function listLexicographicDirectoryNames(args: {
     },
     {
       maxEntriesExamined: args.maxEntriesExamined,
-      onDirent: args.onDirent
+      onDirent: args.onDirent,
+      opendir: args.opendir
     }
   )
   if (examinationTruncated) {

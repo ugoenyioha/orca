@@ -9,6 +9,8 @@ import {
 } from './ssh-filesystem-download'
 import { openSshFileUploadSession, type SshRawTransferOptions } from './ssh-filesystem-file-upload'
 import {
+  closeSshFilesystemWatch,
+  registerSshFilesystemWatch,
   stopSshFilesystemWatchRegistration,
   type WatchRegistration
 } from './ssh-filesystem-provider-watch'
@@ -24,19 +26,8 @@ import type { SearchOptions, SearchResult } from '../../shared/code-search-types
 import type { DirEntry, FsChangeEvent } from '../../shared/filesystem-entry-types'
 import { routeSshFilesystemWatchNotification } from './ssh-filesystem-watch-notifications'
 import type { WorkspaceSpaceDirectoryScanResult } from '../../shared/workspace-space-types'
-import type {
-  CursorSidecarScanRequest,
-  CursorSidecarScanResponse
-} from '../../shared/cursor-sidecar-scan'
 import { isWindowsRemoteHost, type RemoteHostPlatform } from '../ssh/ssh-remote-platform'
-import {
-  closeSshFilesystemWatchOnMux,
-  listSshFiles,
-  scanSshCursorSidecarsOnMux,
-  scanSshWorkspaceSpace,
-  searchSshFiles,
-  watchSshFilesystem
-} from './ssh-filesystem-provider-listing'
+const WORKSPACE_SPACE_SCAN_TIMEOUT_MS = 130_000
 
 export class SshFilesystemProvider implements IFilesystemProvider {
   private connectionId: string
@@ -255,16 +246,16 @@ export class SshFilesystemProvider implements IFilesystemProvider {
     }
   }
 
-  scanCursorSidecars = (
-    request: CursorSidecarScanRequest,
-    options?: { signal?: AbortSignal }
-  ): Promise<CursorSidecarScanResponse> => scanSshCursorSidecarsOnMux(this.mux, request, options)
-
-  scanWorkspaceSpace = (
+  async scanWorkspaceSpace(
     rootPath: string,
     options?: { signal?: AbortSignal }
-  ): Promise<WorkspaceSpaceDirectoryScanResult> =>
-    scanSshWorkspaceSpace(this.mux, rootPath, options)
+  ): Promise<WorkspaceSpaceDirectoryScanResult> {
+    return (await this.mux.request(
+      'fs.workspaceSpaceScan',
+      { rootPath },
+      { signal: options?.signal, timeoutMs: WORKSPACE_SPACE_SCAN_TIMEOUT_MS }
+    )) as WorkspaceSpaceDirectoryScanResult
+  }
 
   async deletePath(targetPath: string, recursive?: boolean): Promise<void> {
     await this.mux.request('fs.deletePath', { targetPath, recursive })
@@ -307,27 +298,46 @@ export class SshFilesystemProvider implements IFilesystemProvider {
     return (await this.mux.request('fs.realpath', { filePath })) as string
   }
 
-  search = (opts: SearchOptions): Promise<SearchResult> => searchSshFiles(this.mux, opts)
+  async search(opts: SearchOptions): Promise<SearchResult> {
+    return (await this.mux.request('fs.search', opts)) as SearchResult
+  }
 
-  listFiles = (
+  async listFiles(
     rootPath: string,
     options?: { excludePaths?: string[]; signal?: AbortSignal; maxResults?: number }
-  ): Promise<string[]> => listSshFiles(this.mux, rootPath, options)
+  ): Promise<string[]> {
+    const params: Record<string, unknown> = { rootPath }
+    if (options?.excludePaths && options.excludePaths.length > 0) {
+      params.excludePaths = options.excludePaths
+    }
+    if (options?.maxResults !== undefined) {
+      params.maxResults = options.maxResults
+    }
+    // Why #7721: the signal lets a workspace switch send rpc.cancel so the
+    // relay aborts the full-tree scan instead of stacking abandoned scans
+    // that starve interactive fs.readDir/fs.stat on the shared SSH channel.
+    return (await this.mux.request('fs.listFiles', params, {
+      signal: options?.signal
+    })) as string[]
+  }
 
-  watch = (
+  async watch(
     rootPath: string,
     callback: (events: FsChangeEvent[]) => void,
     options?: { signal?: AbortSignal; onTerminalError?: (error: Error) => void }
-  ): Promise<() => void> =>
-    watchSshFilesystem({
+  ): Promise<() => void> {
+    return registerSshFilesystemWatch({
       mux: this.mux,
       disposed: () => this.disposed,
       registrations: this.watchListeners,
       rootPath,
       callback,
-      options
+      onTerminalError: options?.onTerminalError,
+      signal: options?.signal
     })
+  }
 
-  closeWatch = (rootPath: string): Promise<void> =>
-    closeSshFilesystemWatchOnMux(this.mux, this.watchListeners, rootPath)
+  async closeWatch(rootPath: string): Promise<void> {
+    await closeSshFilesystemWatch(this.mux, this.watchListeners, rootPath)
+  }
 }

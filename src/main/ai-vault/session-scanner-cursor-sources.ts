@@ -1,4 +1,3 @@
-import { realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AiVaultScanIssue } from '../../shared/ai-vault-types'
 import {
@@ -18,8 +17,12 @@ import type {
   FileWithMtime,
   SessionFileDiscovery
 } from './session-scanner-types'
-import { createAiVaultScanCancelledError } from './ai-vault-scan-cancellation'
+import {
+  createAiVaultScanCancelledError,
+  throwIfAiVaultScanCancelled
+} from './ai-vault-scan-cancellation'
 import { errorMessage } from './session-scanner-values'
+import { wslGatedRealpath } from '../native-chat/wsl-transcript-fs-access'
 
 // Matches the shared owning-host scope cap; conversion work stays bounded too.
 const CURSOR_SCOPE_PATH_LIMIT = 64
@@ -85,7 +88,8 @@ async function discoverCursorSidecars(args: {
         resolveLocalSidecarScopePaths({
           scopePath,
           storageContextKey: args.roots.storageContextKey,
-          targetPlatform: args.roots.targetPlatform
+          targetPlatform: args.roots.targetPlatform,
+          signal: args.options.signal
         })
     })
   } catch (error) {
@@ -207,7 +211,7 @@ async function localScopeCandidates(args: {
       candidates.add(cwd)
     }
     try {
-      const resolved = await realpath(scopePath)
+      const resolved = await wslGatedRealpath(scopePath, 'scan', args.options.signal)
       for (const cwd of cursorScopeCwdCandidates({
         scopePath: resolved,
         platform: args.roots.targetPlatform,
@@ -216,6 +220,7 @@ async function localScopeCandidates(args: {
         candidates.add(cwd)
       }
     } catch {
+      throwIfAiVaultScanCancelled(args.options.signal)
       // A scope path need not exist in every selected storage context.
     }
   }
@@ -243,6 +248,7 @@ export async function resolveLocalSidecarScopePaths(args: {
   scopePath: string
   storageContextKey: string
   targetPlatform: NodeJS.Platform
+  signal?: AbortSignal
   realpathPath?: (path: string) => Promise<string>
 }): Promise<string[]> {
   const candidates = new Set(
@@ -253,7 +259,9 @@ export async function resolveLocalSidecarScopePaths(args: {
     })
   )
   try {
-    const resolved = await (args.realpathPath ?? realpath)(args.scopePath)
+    const resolved = await (
+      args.realpathPath ?? ((path) => wslGatedRealpath(path, 'scan', args.signal))
+    )(args.scopePath)
     for (const candidate of cursorScopeCwdCandidates({
       scopePath: resolved,
       storageContextKey: args.storageContextKey,
@@ -262,6 +270,9 @@ export async function resolveLocalSidecarScopePaths(args: {
       candidates.add(candidate)
     }
   } catch {
+    if (args.signal?.aborted) {
+      throw new Error('cursor_sidecar_scan_cancelled')
+    }
     // A scope path need not exist in every selected storage context.
   }
   return [...candidates]

@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  CURSOR_REMOTE_MAX_BUCKETS,
-  CURSOR_REMOTE_MAX_SCOPE_PATHS,
-  CURSOR_REMOTE_MAX_SESSION_DIRS
+  CURSOR_SIDECAR_MAX_AGGREGATE_BYTES,
+  CURSOR_SIDECAR_MAX_BUCKETS,
+  CURSOR_SIDECAR_MAX_BYTES,
+  CURSOR_SIDECAR_MAX_SCOPE_PATHS,
+  CURSOR_SIDECAR_MAX_SESSION_DIRS
 } from '../../shared/cursor-sidecar-scan'
 import type { AiVaultScanIssue } from '../../shared/ai-vault-types'
 import { discoverLocalCursorSidecarsBounded } from './session-scanner-cursor-local-files'
@@ -85,11 +87,11 @@ describe('local Cursor sidecar discovery bounds', () => {
       result.counters.boundedReads +
       result.counters.scopeRealpath
 
-    const maxBucketReaddirs = Math.min(bucketCount, CURSOR_REMOTE_MAX_BUCKETS)
-    const maxSessions = Math.min(bucketCount * sessionsPerBucket, CURSOR_REMOTE_MAX_SESSION_DIRS)
+    const maxBucketReaddirs = Math.min(bucketCount, CURSOR_SIDECAR_MAX_BUCKETS)
+    const maxSessions = Math.min(bucketCount * sessionsPerBucket, CURSOR_SIDECAR_MAX_SESSION_DIRS)
     const maxOps = 1 + maxBucketReaddirs + maxSessions * 2
 
-    expect(result.files.length).toBeLessThanOrEqual(CURSOR_REMOTE_MAX_SESSION_DIRS)
+    expect(result.files.length).toBeLessThanOrEqual(CURSOR_SIDECAR_MAX_SESSION_DIRS)
     expect(result.files.length).toBe(maxSessions)
     expect(result.truncated.sessionDirs).toBe(true)
     expect(result.truncated.buckets).toBe(false)
@@ -146,7 +148,7 @@ describe('local Cursor sidecar discovery bounds', () => {
     })
 
     // Fill beyond the unscoped bucket cap with lexicographically earlier names.
-    for (let index = 0; index < CURSOR_REMOTE_MAX_BUCKETS + 8; index += 1) {
+    for (let index = 0; index < CURSOR_SIDECAR_MAX_BUCKETS + 8; index += 1) {
       const foreign = `0${String(index).padStart(31, '0')}`
       expect(foreign < scopedBucket || !BUCKET_PATTERN_TEST(foreign)).toBeTruthy()
       await addSession(chatsDir, bucketName(`early-${index}`), `early-${index}`, {
@@ -154,7 +156,7 @@ describe('local Cursor sidecar discovery bounds', () => {
       })
     }
     // Ensure at least 256 foreign buckets exist with md5 names; pad if needed.
-    for (let index = 0; index < CURSOR_REMOTE_MAX_BUCKETS + 8; index += 1) {
+    for (let index = 0; index < CURSOR_SIDECAR_MAX_BUCKETS + 8; index += 1) {
       await addSession(
         chatsDir,
         bucketName(`pad-foreign-${String(index).padStart(4, '0')}`),
@@ -184,7 +186,7 @@ describe('local Cursor sidecar discovery bounds', () => {
     tempRoots.push(root)
     const roots = isolatedScanRoots(root)
     const scopePaths = Array.from(
-      { length: CURSOR_REMOTE_MAX_SCOPE_PATHS - 1 },
+      { length: CURSOR_SIDECAR_MAX_SCOPE_PATHS - 1 },
       (_, index) => `c:\\workspaces\\repo-${String(index).padStart(3, '0')}`
     )
     let targetScope = ''
@@ -203,7 +205,7 @@ describe('local Cursor sidecar discovery bounds', () => {
     )
 
     await Promise.all(
-      Array.from({ length: CURSOR_REMOTE_MAX_BUCKETS }, (_, index) =>
+      Array.from({ length: CURSOR_SIDECAR_MAX_BUCKETS }, (_, index) =>
         mkdir(join(roots.cursorChatsDir, index.toString(16).padStart(32, '0')), {
           recursive: true
         })
@@ -231,7 +233,7 @@ describe('local Cursor sidecar discovery bounds', () => {
     const chatsDir = join(root, 'chats')
     await mkdir(chatsDir, { recursive: true })
     const scopePaths = Array.from(
-      { length: CURSOR_REMOTE_MAX_SCOPE_PATHS + 3 },
+      { length: CURSOR_SIDECAR_MAX_SCOPE_PATHS + 3 },
       (_, index) => `/home/ada/projects/repo-${index}`
     )
 
@@ -283,7 +285,7 @@ describe('local Cursor sidecar discovery bounds', () => {
         signal
       })
     ).rejects.toThrow('cursor_sidecar_scan_cancelled')
-    expect(checks).toBe(2)
+    expect(checks).toBeGreaterThanOrEqual(2)
   })
 
   it('rejects on second-phase cancellation instead of resolving with an issue', async () => {
@@ -314,6 +316,67 @@ describe('local Cursor sidecar discovery bounds', () => {
     expect(issues.some((issue) => issue.message.includes('cursor_sidecar_scan_cancelled'))).toBe(
       false
     )
+  })
+
+  it('starts no filesystem work after root resolution observes cancellation', async () => {
+    const controller = new AbortController()
+    const opendir = vi.fn()
+    const fileLstat = vi.fn()
+    const { discoverCursorSidecarCandidates, cursorSidecarScanCancellationFromSignal } =
+      await import('../../shared/cursor-sidecar-scan-discovery')
+
+    await expect(
+      discoverCursorSidecarCandidates({
+        chatsRoot: '/cursor/chats',
+        scopePaths: [],
+        caps: localScanCaps(),
+        response: emptyScanResponse(),
+        cancellation: cursorSidecarScanCancellationFromSignal(controller.signal),
+        io: {
+          realpath: async (path) => {
+            controller.abort()
+            return path
+          },
+          lstat: fileLstat,
+          opendir
+        }
+      })
+    ).rejects.toThrow('cursor_sidecar_scan_cancelled')
+
+    expect(opendir).not.toHaveBeenCalled()
+    expect(fileLstat).not.toHaveBeenCalled()
+  })
+
+  it('skips a sidecar that disappears during metadata inspection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orca-cursor-vanished-'))
+    tempRoots.push(root)
+    const chatsDir = join(root, 'chats')
+    const bucket = bucketName('vanished-sidecar')
+    const vanishedMeta = await addSession(chatsDir, bucket, 'aaa-vanished')
+    const stableMeta = await addSession(chatsDir, bucket, 'bbb-stable')
+    const response = emptyScanResponse()
+    const { discoverCursorSidecarCandidates, cursorSidecarScanCancellationFromSignal } =
+      await import('../../shared/cursor-sidecar-scan-discovery')
+
+    const discovery = await discoverCursorSidecarCandidates({
+      chatsRoot: chatsDir,
+      scopePaths: [],
+      caps: localScanCaps(),
+      response,
+      cancellation: cursorSidecarScanCancellationFromSignal(),
+      io: {
+        realpath,
+        lstat: async (path) => {
+          if (path === vanishedMeta) {
+            throw Object.assign(new Error('gone'), { code: 'ENOENT' })
+          }
+          return lstat(path)
+        }
+      }
+    })
+
+    expect(discovery?.candidates.map((candidate) => candidate.metaPath)).toEqual([stableMeta])
+    expect(response.issues).toEqual([])
   })
 
   it('caps aggregate verified meta bytes so a 70×~250KiB store cannot return every session', async () => {
@@ -357,7 +420,7 @@ describe('local Cursor sidecar discovery bounds', () => {
     tempRoots.push(root)
     const chatsDir = join(root, 'chats')
     const bucket = bucketName('mtime-pair')
-    const content = `${'x'.repeat(70)}`
+    const content = 'x'.repeat(70)
     expect(Buffer.byteLength(content, 'utf8')).toBe(70)
     // Lexicographically earlier session is older; later name is newer.
     for (const [sessionId, mtimeMs] of [
@@ -388,16 +451,12 @@ describe('local Cursor sidecar discovery bounds', () => {
     const { discoverCursorSidecarCandidates, cursorSidecarScanCancellationFromSignal } =
       await import('../../shared/cursor-sidecar-scan-discovery')
     const {
-      CURSOR_SIDECAR_SCAN_VERSION,
-      CURSOR_REMOTE_MAX_BUCKETS,
-      CURSOR_REMOTE_MAX_SESSION_DIRS,
-      CURSOR_REMOTE_MAX_SCOPE_PATHS,
+      CURSOR_SIDECAR_MAX_BUCKETS,
+      CURSOR_SIDECAR_MAX_SESSION_DIRS,
+      CURSOR_SIDECAR_MAX_SCOPE_PATHS,
       CURSOR_SIDECAR_MAX_BYTES
     } = await import('../../shared/cursor-sidecar-scan')
     const response = {
-      version: CURSOR_SIDECAR_SCAN_VERSION,
-      scopeCwds: [] as string[],
-      sidecars: [] as never[],
       issues: [] as { path: string; message: string }[],
       counters: {
         rootReaddir: 0,
@@ -411,20 +470,12 @@ describe('local Cursor sidecar discovery bounds', () => {
       truncated: { scopePaths: false, buckets: false, sessionDirs: false, sidecarBytes: false }
     }
     const discovery = await discoverCursorSidecarCandidates({
-      request: {
-        version: CURSOR_SIDECAR_SCAN_VERSION,
-        chatsRoot: chatsDir,
-        scopePaths: [],
-        maxBuckets: CURSOR_REMOTE_MAX_BUCKETS,
-        maxSessionDirs: CURSOR_REMOTE_MAX_SESSION_DIRS,
-        maxScopePaths: CURSOR_REMOTE_MAX_SCOPE_PATHS,
-        maxSidecarBytes: CURSOR_SIDECAR_MAX_BYTES,
-        maxAggregateBytes: 70
-      },
+      chatsRoot: chatsDir,
+      scopePaths: [],
       caps: {
-        buckets: CURSOR_REMOTE_MAX_BUCKETS,
-        sessions: CURSOR_REMOTE_MAX_SESSION_DIRS,
-        scopes: CURSOR_REMOTE_MAX_SCOPE_PATHS,
+        buckets: CURSOR_SIDECAR_MAX_BUCKETS,
+        sessions: CURSOR_SIDECAR_MAX_SESSION_DIRS,
+        scopes: CURSOR_SIDECAR_MAX_SCOPE_PATHS,
         sidecarBytes: CURSOR_SIDECAR_MAX_BYTES,
         aggregateBytes: 70
       },
@@ -468,7 +519,7 @@ describe('local Cursor sidecar discovery bounds', () => {
     const root = await mkdtemp(join(tmpdir(), 'orca-cursor-trunc-'))
     tempRoots.push(root)
     const chatsDir = join(root, 'chats')
-    for (let index = 0; index < CURSOR_REMOTE_MAX_BUCKETS + 5; index += 1) {
+    for (let index = 0; index < CURSOR_SIDECAR_MAX_BUCKETS + 5; index += 1) {
       await addSession(chatsDir, bucketName(`trunc-bucket-${index}`), 'only-session')
     }
 
@@ -486,4 +537,30 @@ describe('local Cursor sidecar discovery bounds', () => {
 
 function BUCKET_PATTERN_TEST(value: string): boolean {
   return /^[0-9a-f]{32}$/u.test(value)
+}
+
+function localScanCaps() {
+  return {
+    buckets: CURSOR_SIDECAR_MAX_BUCKETS,
+    sessions: CURSOR_SIDECAR_MAX_SESSION_DIRS,
+    scopes: CURSOR_SIDECAR_MAX_SCOPE_PATHS,
+    sidecarBytes: CURSOR_SIDECAR_MAX_BYTES,
+    aggregateBytes: CURSOR_SIDECAR_MAX_AGGREGATE_BYTES
+  }
+}
+
+function emptyScanResponse() {
+  return {
+    issues: [],
+    counters: {
+      rootReaddir: 0,
+      bucketReaddir: 0,
+      fileLstat: 0,
+      boundedReads: 0,
+      scopeRealpath: 0,
+      returnedBytes: 0,
+      elapsedMs: 0
+    },
+    truncated: { scopePaths: false, buckets: false, sessionDirs: false, sidecarBytes: false }
+  }
 }
