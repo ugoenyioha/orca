@@ -16,10 +16,8 @@ import {
   type ExpectedTeardownScope,
   type ProcessGoneSource
 } from './process-gone-classification'
-import {
-  buildProcessGoneCrashDetails,
-  buildSuppressedProcessGoneBreadcrumbData
-} from './process-gone-diagnostics'
+import { buildProcessGoneCrashDetails } from './process-gone-diagnostics'
+import { buildSuppressedProcessGoneBreadcrumbData } from './suppressed-process-gone-breadcrumb'
 import {
   getProcessGoneDedupeKey,
   processGoneDedupe,

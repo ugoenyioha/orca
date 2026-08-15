@@ -1,10 +1,8 @@
 import { app } from 'electron'
 import {
   sanitizeCrashReportDetails,
-  type CrashReportBreadcrumbData,
   type CrashReportDetailValue
 } from '../../shared/crash-reporting'
-import type { ExpectedTeardownScope } from './process-gone-classification'
 import { getSystemMemoryAtGoneDetails, memoryKBFieldMB } from './gone-time-system-memory'
 
 type ProcessMetricLike = {
@@ -176,7 +174,14 @@ let preGoneSampleTimer: ReturnType<typeof setInterval> | null = null
 // Why: a pid reported as Vanished once must not be re-attributed to a later
 // crash — a crash-looped respawn dying before the next sweep would otherwise
 // confidently inherit the previous crasher's pid and working set.
+// Bounded: only pids of the current sample are ever added, and a successful
+// sweep clears it, so it never outgrows one sample's process list.
 const attributedVanishedPids = new Set<number>()
+// Why: a crash recorded while gone-time metrics were unreadable consumed
+// nothing — a later record's Vanished numbers drawn from the same sample era
+// may describe THAT crash, not their own. Track the blind buckets so the
+// later record says so instead of attributing confidently.
+const metricsBlindCrashBuckets = new Set<ProcessMetricBucketName>()
 
 function sampledProcessIdentities(metrics: ProcessMetricLike[]): PreGoneSampledProcess[] {
   const processes: PreGoneSampledProcess[] = []
@@ -204,6 +209,7 @@ export function samplePreGoneProcessMetrics(nowMs: number = Date.now()): void {
     }
     // Fresh identities: attribution state belongs to the sample it came from.
     attributedVanishedPids.clear()
+    metricsBlindCrashBuckets.clear()
   } catch {
     // Why: a failed sweep must not erase the previous good sample.
   }
@@ -227,6 +233,7 @@ export function resetPreGoneProcessMetricsSamplingForTest(): void {
   preGoneSampleTimer = null
   preGoneSample = null
   attributedVanishedPids.clear()
+  metricsBlindCrashBuckets.clear()
 }
 
 const PROCESS_METRICS_KEY_PREFIX = 'processMetrics'
@@ -265,17 +272,27 @@ export function buildProcessGoneCrashDetails(
   // a sampled same-bucket pid that vanished from the live set as proof. That
   // still misses a crasher younger than the last sweep, and Vanished can
   // include a legitimately-closed same-bucket process — Pid is only emitted
-  // when the vanished process is unambiguous.
+  // when the vanished process is unambiguous among SAMPLED processes; it can
+  // still name a legitimately-closed one when the true crasher was younger
+  // than the last sweep.
   const crashedBucket = metricTypeBucket(crashedProcessType)
   const crashedBucketCountKey = `${PROCESS_METRICS_KEY_PREFIX}${titleCaseBucket(crashedBucket)}Count`
+  if (!livePidBuckets) {
+    metricsBlindCrashBuckets.add(crashedBucket)
+  }
+  let vanishedAlreadyReported = 0
   const vanished =
     livePidBuckets && preGoneSample
-      ? preGoneSample.processes.filter(
-          (p) =>
-            p.bucket === crashedBucket &&
-            !attributedVanishedPids.has(p.pid) &&
-            livePidBuckets.get(p.pid) !== p.bucket
-        )
+      ? preGoneSample.processes.filter((p) => {
+          if (p.bucket !== crashedBucket || livePidBuckets.get(p.pid) === p.bucket) {
+            return false
+          }
+          if (attributedVanishedPids.has(p.pid)) {
+            vanishedAlreadyReported += 1
+            return false
+          }
+          return true
+        })
       : []
   if (liveMetricDetails[crashedBucketCountKey] === 0 || vanished.length > 0) {
     crashDetails.processMetricsCrashedProcessAbsent = true
@@ -296,49 +313,23 @@ export function buildProcessGoneCrashDetails(
         0
       )
     }
+    if (metricsBlindCrashBuckets.has(crashedBucket)) {
+      // Why: an earlier same-bucket crash in this era was recorded blind, so
+      // these Vanished numbers may belong to it rather than to this crash.
+      crashDetails.processMetricsVanishedAmbiguousWithEarlierCrash = true
+    }
     for (const p of vanished) {
       attributedVanishedPids.add(p.pid)
     }
+  }
+  if (vanishedAlreadyReported > 0) {
+    // Why: consumed attribution must not read as "nothing vanished" — this
+    // says an earlier record already reported these pids, so the PreGone
+    // mirrors below describe that earlier crasher's era, not this one's.
+    crashDetails.processMetricsVanishedAlreadyReportedCount = vanishedAlreadyReported
   }
   if (preGoneSample) {
     Object.assign(crashDetails, preGoneSampleDetails(preGoneSample, Date.now()))
   }
   return crashDetails
-}
-
-export function buildSuppressedProcessGoneBreadcrumbData({
-  source,
-  processType,
-  reason,
-  exitCode,
-  expectedTeardown,
-  details
-}: {
-  source: 'renderer' | 'child'
-  processType: string
-  reason: string
-  exitCode: number | null
-  expectedTeardown: ExpectedTeardownScope
-  details: Record<string, unknown>
-}): CrashReportBreadcrumbData {
-  const breadcrumb: CrashReportBreadcrumbData = {
-    source,
-    processType,
-    reason,
-    exitCode,
-    expectedTeardown
-  }
-  const name = safeString(details.name)
-  if (name) {
-    breadcrumb.name = name
-  }
-  const serviceName = safeString(details.serviceName)
-  if (serviceName) {
-    breadcrumb.serviceName = serviceName
-  }
-  const type = safeString(details.type)
-  if (type) {
-    breadcrumb.type = type
-  }
-  return breadcrumb
 }

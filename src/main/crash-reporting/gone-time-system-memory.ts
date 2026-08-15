@@ -4,6 +4,8 @@ import type { CrashReportDetailValue } from '../../shared/crash-reporting'
 // Why: the system outlives the crashed process, so this IS sampleable at
 // process-gone — it separates "renderer grew huge" from "machine out of
 // memory/commit", which the per-process buckets alone cannot.
+// Timing honesty: this reads AFTER the crashed process's memory returned to
+// the OS, so free/swapFree can look healthier than they were at kill time.
 // Platform honesty: swap* exist on Windows/Linux only. On macOS `free` is
 // near-meaningless (file cache and compression keep it low on healthy
 // machines); fileBacked/purgeable are the only reclaimability proxy this API

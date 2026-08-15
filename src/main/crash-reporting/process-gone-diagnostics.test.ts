@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildProcessGoneCrashDetails,
-  buildSuppressedProcessGoneBreadcrumbData,
   collectProcessGoneMetricDetails,
   resetPreGoneProcessMetricsSamplingForTest,
   samplePreGoneProcessMetrics,
@@ -369,15 +368,113 @@ describe('process gone diagnostics', () => {
       { pid: 200, type: 'Browser', memory: { workingSetSize: 1024 * 400 } }
     ])
 
-    expect(buildProcessGoneCrashDetails({}, 'renderer')).toMatchObject({
-      processMetricsVanishedPid: 201
-    })
+    const first = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(first.processMetricsVanishedPid).toBe(201)
+    expect(first.processMetricsVanishedAlreadyReportedCount).toBeUndefined()
 
     const second = buildProcessGoneCrashDetails({}, 'renderer')
     expect(second.processMetricsVanishedCount).toBeUndefined()
     expect(second.processMetricsVanishedPid).toBeUndefined()
     // Absence still proven by the empty live renderer bucket.
     expect(second.processMetricsCrashedProcessAbsent).toBe(true)
+    // Suppressed attribution is not "nothing vanished": the record says a
+    // prior report consumed the pid, so its PreGone mirrors are that era's.
+    expect(second.processMetricsVanishedAlreadyReportedCount).toBe(1)
+  })
+
+  it('keeps consumed attribution suppressed across a failed sweep', () => {
+    // A failed sweep keeps the old sample, so it must keep the old
+    // attribution state too — clearing here would resurrect the crash-loop
+    // misattribution the consume-once set exists to prevent.
+    appMetricsMock.mockReturnValue([
+      { pid: 201, type: 'Tab', memory: { workingSetSize: 1024 * 5000 } }
+    ])
+    samplePreGoneProcessMetrics()
+    appMetricsMock.mockReturnValue([])
+    expect(buildProcessGoneCrashDetails({}, 'renderer')).toMatchObject({
+      processMetricsVanishedPid: 201
+    })
+
+    appMetricsMock.mockImplementationOnce(() => {
+      throw new Error('metrics unavailable')
+    })
+    samplePreGoneProcessMetrics()
+    appMetricsMock.mockReturnValue([])
+
+    const second = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(second.processMetricsVanishedPid).toBeUndefined()
+    expect(second.processMetricsVanishedAlreadyReportedCount).toBe(1)
+  })
+
+  it('marks vanished attribution ambiguous after a metrics-blind crash in the same era', () => {
+    // Consume-once only consumes when the gone-time read succeeds: a crash
+    // recorded blind (getAppMetrics threw) leaves its pid unconsumed, so a
+    // later record's Vanished numbers may describe THAT crash — say so.
+    appMetricsMock.mockReturnValue([
+      { pid: 201, type: 'Tab', memory: { workingSetSize: 1024 * 5000 } }
+    ])
+    samplePreGoneProcessMetrics()
+    appMetricsMock.mockImplementationOnce(() => {
+      throw new Error('metrics unavailable')
+    })
+    expect(buildProcessGoneCrashDetails({}, 'renderer').processMetricsError).toBe('Error')
+
+    appMetricsMock.mockReturnValue([])
+    const second = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(second.processMetricsVanishedPid).toBe(201)
+    expect(second.processMetricsVanishedAmbiguousWithEarlierCrash).toBe(true)
+
+    // A fresh sweep starts a clean era: attribution is confident again.
+    appMetricsMock.mockReturnValue([
+      { pid: 301, type: 'Tab', memory: { workingSetSize: 1024 * 800 } }
+    ])
+    samplePreGoneProcessMetrics()
+    appMetricsMock.mockReturnValue([])
+    const third = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(third.processMetricsVanishedPid).toBe(301)
+    expect(third.processMetricsVanishedAmbiguousWithEarlierCrash).toBeUndefined()
+  })
+
+  it('scopes the blind-crash ambiguity to the crashed bucket', () => {
+    // A blind Utility crash says nothing about renderer attribution.
+    appMetricsMock.mockReturnValue([
+      { pid: 201, type: 'Tab', memory: { workingSetSize: 1024 * 5000 } },
+      { pid: 210, type: 'Utility', memory: { workingSetSize: 1024 * 80 } }
+    ])
+    samplePreGoneProcessMetrics()
+    appMetricsMock.mockImplementationOnce(() => {
+      throw new Error('metrics unavailable')
+    })
+    buildProcessGoneCrashDetails({}, 'Utility')
+
+    appMetricsMock.mockReturnValue([
+      { pid: 210, type: 'Utility', memory: { workingSetSize: 1024 * 80 } }
+    ])
+    const details = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(details.processMetricsVanishedPid).toBe(201)
+    expect(details.processMetricsVanishedAmbiguousWithEarlierCrash).toBeUndefined()
+  })
+
+  it('consumes an ambiguous vanished pair so a later record never repeats its sum', () => {
+    appMetricsMock.mockReturnValue([
+      { pid: 101, type: 'Tab', memory: { workingSetSize: 1024 * 2000 } },
+      { pid: 102, type: 'Tab', memory: { workingSetSize: 1024 * 500 } }
+    ])
+    samplePreGoneProcessMetrics()
+    appMetricsMock.mockReturnValue([])
+
+    expect(buildProcessGoneCrashDetails({}, 'renderer')).toMatchObject({
+      processMetricsVanishedCount: 2,
+      processMetricsVanishedWorkingSetMB: 2500
+    })
+
+    // The ambiguous pair was reported once (count + sum + largest); a second
+    // record repeating those numbers would double-report the same exits.
+    const second = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(second.processMetricsVanishedCount).toBeUndefined()
+    expect(second.processMetricsVanishedWorkingSetMB).toBeUndefined()
+    expect(second.processMetricsVanishedLargestWorkingSetMB).toBeUndefined()
+    expect(second.processMetricsVanishedAlreadyReportedCount).toBe(2)
   })
 
   it('re-arms vanished attribution when a fresh sweep samples the pid alive again', () => {
@@ -398,10 +495,13 @@ describe('process gone diagnostics', () => {
     samplePreGoneProcessMetrics()
     appMetricsMock.mockReturnValue([])
 
-    expect(buildProcessGoneCrashDetails({}, 'renderer')).toMatchObject({
+    const details = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(details).toMatchObject({
       processMetricsVanishedPid: 201,
       processMetricsVanishedWorkingSetMB: 1500
     })
+    // Fresh sweep = fresh era: no stale "already reported" residue.
+    expect(details.processMetricsVanishedAlreadyReportedCount).toBeUndefined()
   })
 
   it('claims neither absence nor vanished pids when gone-time metrics are unreadable', () => {
@@ -453,6 +553,8 @@ describe('process gone diagnostics', () => {
     expect(details.processMetricsCrashedProcessAbsent).toBeUndefined()
     expect(details.processMetricsVanishedCount).toBeUndefined()
     expect(details.processMetricsVanishedWorkingSetMB).toBeUndefined()
+    // Out-of-bucket and still-alive exclusions are not "already reported".
+    expect(details.processMetricsVanishedAlreadyReportedCount).toBeUndefined()
   })
 
   it('degrades honestly in a crash loop when the sweep lands between death and respawn', () => {
@@ -640,31 +742,6 @@ describe('process gone diagnostics', () => {
       processMetricsCount: 2,
       processMetricsRendererWorkingSetMB: 400,
       processMetricsLargestPid: 22
-    })
-  })
-
-  it('preserves child process identity on suppressed breadcrumbs', () => {
-    expect(
-      buildSuppressedProcessGoneBreadcrumbData({
-        source: 'child',
-        processType: 'Utility',
-        reason: 'killed',
-        exitCode: 1,
-        expectedTeardown: 'app-shutdown',
-        details: {
-          name: 'Network Service',
-          serviceName: 'network.mojom.NetworkService',
-          nested: { ignored: true }
-        }
-      })
-    ).toEqual({
-      source: 'child',
-      processType: 'Utility',
-      reason: 'killed',
-      exitCode: 1,
-      expectedTeardown: 'app-shutdown',
-      name: 'Network Service',
-      serviceName: 'network.mojom.NetworkService'
     })
   })
 })
