@@ -491,4 +491,74 @@ describe('recordProcessGoneCrash whole-process-tree kills', () => {
 
     expect(record).toHaveBeenCalledOnce()
   })
+
+  // One matching sibling is a tree kill too: a lone GPU death after the
+  // renderer must retract the deferred report, not just a pair of them.
+  it('suppresses the renderer kill when a single sibling arrives during the settle', async () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    const dedupe = new ProcessGoneDedupe()
+    vi.useFakeTimers()
+
+    recordProcessGoneCrash({ record } as never, rendererKill, dedupe)
+    vi.advanceTimersByTime(40)
+    recordProcessGoneCrash({ record } as never, gpuKill, dedupe)
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(record).not.toHaveBeenCalled()
+    expect(getCrashBreadcrumbSnapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'process_gone_suppressed',
+          data: expect.objectContaining({ source: 'renderer', siblingKills: 1 })
+        })
+      ])
+    )
+  })
+
+  // Child kills observe themselves into the ring before counting; the sibling
+  // clause must never read that self-count as a reason to drop a child report.
+  it('still reports a non-recoverable child kill despite its own ring entry', async () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+
+    recordProcessGoneCrash(
+      { record } as never,
+      event({
+        source: 'child',
+        processType: 'Utility',
+        reason: 'killed',
+        exitCode: 1,
+        details: { serviceName: 'chrome.mojom.UtilWin', type: 'Utility' }
+      }),
+      new ProcessGoneDedupe()
+    )
+
+    await vi.waitFor(() => expect(record).toHaveBeenCalledOnce())
+  })
+
+  // The pre-deferral code flushed the process-gone span synchronously; a main
+  // process dying inside the settle must still leave durable evidence behind.
+  it('flushes durable evidence at defer time so a mid-settle main death leaves a trace', () => {
+    const record = vi.fn().mockResolvedValue({ id: 'report-1' })
+    vi.useFakeTimers()
+
+    recordProcessGoneCrash({ record } as never, rendererKill, new ProcessGoneDedupe())
+
+    expect(record).not.toHaveBeenCalled()
+    expect(getCrashBreadcrumbSnapshot()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'process_gone_deferred',
+          data: expect.objectContaining({ source: 'renderer', reason: 'killed', exitCode: 1 })
+        })
+      ])
+    )
+    expect(sink.records).toEqual([
+      expect.objectContaining({
+        name: 'crash.breadcrumb',
+        attributes: expect.objectContaining({ 'breadcrumb.name': 'process_gone_deferred' }),
+        exit: expect.objectContaining({ _tag: 'Failure' })
+      })
+    ])
+    expect(sink.flushMock).toHaveBeenCalledOnce()
+  })
 })

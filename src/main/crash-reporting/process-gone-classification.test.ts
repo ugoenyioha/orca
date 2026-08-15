@@ -361,6 +361,23 @@ describe('shouldRecordProcessGoneCrash', () => {
     ).toBe(false)
   })
 
+  // Sibling suppression is renderer-only: a child kill always counts itself
+  // into the ring, so a source-blind clause would drop every non-recoverable
+  // child kill report.
+  it('keeps reporting a non-recoverable child kill that has sibling kills', () => {
+    expect(
+      shouldRecordProcessGoneCrash({
+        source: 'child',
+        processType: 'Utility',
+        serviceName: 'chrome.mojom.UtilWin',
+        reason: 'killed',
+        exitCode: 1,
+        expectedTeardown: 'none',
+        siblingChildKills: 2
+      })
+    ).toBe(true)
+  })
+
   it('keeps reporting non-killed renderer exits that coincide with child kills', () => {
     expect(
       shouldRecordProcessGoneCrash({

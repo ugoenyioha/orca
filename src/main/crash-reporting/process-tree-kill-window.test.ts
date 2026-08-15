@@ -48,6 +48,33 @@ describe('countSiblingProcessTreeKills', () => {
     ).toBe(1)
   })
 
+  it('pins the boundary on the future side of the queried instant too', () => {
+    observeProcessGoneKill(childKill(10_000))
+
+    expect(
+      countSiblingProcessTreeKills({
+        reason: 'killed',
+        exitCode: 1,
+        at: 10_000 - PROCESS_TREE_KILL_WINDOW_MS
+      })
+    ).toBe(1)
+    expect(
+      countSiblingProcessTreeKills({
+        reason: 'killed',
+        exitCode: 1,
+        at: 10_000 - PROCESS_TREE_KILL_WINDOW_MS - 1
+      })
+    ).toBe(0)
+  })
+
+  // Literal on purpose: the ±2s margin over the observed ≤0.1s field offsets is
+  // the contract; a shrunken window would pass every symbolic-constant test.
+  it('keeps a kill 1.9s away inside the window', () => {
+    observeProcessGoneKill(childKill(1_000))
+
+    expect(countSiblingProcessTreeKills({ reason: 'killed', exitCode: 1, at: 2_900 })).toBe(1)
+  })
+
   it('ignores kills with a different reason or exit code', () => {
     observeProcessGoneKill(childKill(1_000, 9))
     observeProcessGoneKill({ at: 1_000, source: 'child', reason: 'crashed', exitCode: 1 })

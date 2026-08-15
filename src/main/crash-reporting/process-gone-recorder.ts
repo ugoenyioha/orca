@@ -133,7 +133,13 @@ export function recordProcessGoneCrash(
     // Why: a tree kill can reach the renderer ~100ms before its children, so
     // let the sibling window settle rather than persisting a report the next
     // child event would have retracted. If the main process dies inside the
-    // settle, the lost report is the tree-kill report we meant to drop.
+    // settle, the lost report is the tree-kill report we meant to drop — but
+    // flush durable evidence now so even that case leaves a trace.
+    recordDurableCrashBreadcrumb(
+      'process_gone_deferred',
+      processGoneBreadcrumbData(event),
+      `renderer killed (${event.exitCode ?? 'unknown'}); deferred ${PROCESS_TREE_KILL_SETTLE_MS}ms for sibling recount`
+    )
     const settleTimer = setTimeout(() => {
       const settledSiblingKills = siblingProcessTreeKillCount(event)
       if (settledSiblingKills > 0) {
