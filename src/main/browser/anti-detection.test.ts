@@ -24,9 +24,19 @@ function createContext(args: {
   nativeNotificationPermission: string
   requestedNotificationPermission: string
 }): AntiDetectionContext & Record<string, unknown> {
+  // Why: the real Permissions.query resolves a PermissionStatus, so the stand-in must carry the
+  // listener methods too — otherwise the test cannot tell a proxied status from a bare literal.
+  class PermissionStatus {
+    state = 'denied'
+    onchange = null
+    marker = 'real-status'
+    addEventListener(): void {}
+    removeEventListener(): void {}
+  }
+
   class Permissions {
     query(): Promise<PermissionQueryResult> {
-      return Promise.resolve({ state: 'denied', onchange: null })
+      return Promise.resolve(new PermissionStatus() as unknown as PermissionQueryResult)
     }
   }
 
@@ -69,18 +79,40 @@ describe('ANTI_DETECTION_SCRIPT', () => {
     runInNewContext(ANTI_DETECTION_SCRIPT, context)
 
     expect(context.Notification.permission).toBe('default')
-    await expect(context.navigator.permissions.query({ name: 'notifications' })).resolves.toEqual({
-      state: 'prompt',
-      onchange: null
-    })
+    expect((await context.navigator.permissions.query({ name: 'notifications' })).state).toBe(
+      'prompt'
+    )
 
     await expect(context.Notification.requestPermission()).resolves.toBe('granted')
 
     expect(context.Notification.permission).toBe('granted')
-    await expect(context.navigator.permissions.query({ name: 'notifications' })).resolves.toEqual({
-      state: 'granted',
-      onchange: null
+    expect((await context.navigator.permissions.query({ name: 'notifications' })).state).toBe(
+      'granted'
+    )
+  })
+
+  it('keeps the real PermissionStatus so listeners can still be registered', async () => {
+    const context = createContext({
+      nativeNotificationPermission: 'denied',
+      requestedNotificationPermission: 'granted'
     })
+
+    runInNewContext(ANTI_DETECTION_SCRIPT, context)
+
+    // Why: the override used to return a bare object literal, so any site doing
+    // query(...).then(s => s.addEventListener('change', ...)) threw a TypeError.
+    for (const name of ['notifications', 'storage-access', 'geolocation']) {
+      const status = (await context.navigator.permissions.query({ name })) as unknown as {
+        addEventListener: unknown
+        removeEventListener: unknown
+        state: string
+        marker: string
+      }
+      expect(typeof status.addEventListener).toBe('function')
+      expect(typeof status.removeEventListener).toBe('function')
+      // Why: proxying the genuine status must not drop its other properties.
+      expect(status.marker).toBe('real-status')
+    }
   })
 
   it('preserves notification permission when Electron already reports a grant', async () => {
@@ -92,9 +124,8 @@ describe('ANTI_DETECTION_SCRIPT', () => {
     runInNewContext(ANTI_DETECTION_SCRIPT, context)
 
     expect(context.Notification.permission).toBe('granted')
-    await expect(context.navigator.permissions.query({ name: 'notifications' })).resolves.toEqual({
-      state: 'granted',
-      onchange: null
-    })
+    expect((await context.navigator.permissions.query({ name: 'notifications' })).state).toBe(
+      'granted'
+    )
   })
 })

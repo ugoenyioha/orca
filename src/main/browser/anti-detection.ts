@@ -81,12 +81,53 @@ export const ANTI_DETECTION_SCRIPT = `(function() {
     'midi', 'idle-detection', 'storage-access'
   ]);
   const origQuery = Permissions.prototype.query;
+  // Why: returning a bare object literal dropped the PermissionStatus prototype, so a site doing
+  // query(...).then(s => s.addEventListener('change', ...)) threw a TypeError — real Chrome returns
+  // a PermissionStatus. Proxy the genuine status and override only 'state' so the prototype,
+  // events and instanceof survive.
+  function withOverriddenState(realStatus, state) {
+    return new Proxy(realStatus, {
+      get(target, prop) {
+        if (prop === 'state') {
+          return state;
+        }
+        const value = Reflect.get(target, prop, target);
+        // Why: methods need the real receiver, but binding 'constructor' too would make
+        // constructor.name read 'bound PermissionStatus' — a fresh tell in the file that exists
+        // to remove them.
+        return typeof value === 'function' && prop !== 'constructor' ? value.bind(target) : value;
+      }
+    });
+  }
+  // Why: some names the real implementation rejects outright; fall back to an EventTarget so
+  // listener registration still works instead of throwing.
+  function fallbackStatus(name, state) {
+    const status = new EventTarget();
+    Object.defineProperties(status, {
+      name: { get: () => name, enumerable: true },
+      state: { get: () => state, enumerable: true },
+      onchange: { value: null, writable: true, enumerable: true }
+    });
+    return status;
+  }
+  function queryWithState(permissions, desc, state) {
+    let real;
+    try {
+      real = origQuery.call(permissions, desc);
+    } catch {
+      return Promise.resolve(fallbackStatus(desc.name, state));
+    }
+    return Promise.resolve(real).then(
+      (status) => withOverriddenState(status, state),
+      () => fallbackStatus(desc.name, state)
+    );
+  }
   Permissions.prototype.query = function(desc) {
     if (desc.name === 'notifications') {
-      return Promise.resolve({ state: notificationPermissionState(), onchange: null });
+      return queryWithState(this, desc, notificationPermissionState());
     }
     if (promptPerms.has(desc.name)) {
-      return Promise.resolve({ state: 'prompt', onchange: null });
+      return queryWithState(this, desc, 'prompt');
     }
     return origQuery.call(this, desc);
   };
