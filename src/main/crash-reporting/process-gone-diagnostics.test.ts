@@ -123,7 +123,7 @@ describe('process gone diagnostics', () => {
     })
   })
 
-  it('refreshes the pre-gone sample on the interval and starts only once', () => {
+  it('samples at start, refreshes on the interval, and starts only once', () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
     appMetricsMock.mockReturnValue([
@@ -132,10 +132,18 @@ describe('process gone diagnostics', () => {
     startPreGoneProcessMetricsSampling(1_000)
     startPreGoneProcessMetricsSampling(1_000)
 
+    // A crash inside the first interval already has a sample to draw from.
+    expect(buildProcessGoneCrashDetails({}, 'renderer')).toMatchObject({
+      processMetricsPreGoneRendererWorkingSetMB: 100
+    })
+
+    appMetricsMock.mockClear()
     appMetricsMock.mockReturnValue([
       { pid: 30, type: 'Tab', memory: { workingSetSize: 1024 * 900 } }
     ])
     vi.advanceTimersByTime(1_000)
+    // Exactly one sweep: the second start() must not have armed a second timer.
+    expect(appMetricsMock).toHaveBeenCalledTimes(1)
     appMetricsMock.mockReturnValue([{ pid: 1, type: 'Browser', memory: { workingSetSize: 0 } }])
 
     expect(buildProcessGoneCrashDetails({}, 'renderer')).toMatchObject({
@@ -144,12 +152,40 @@ describe('process gone diagnostics', () => {
     })
   })
 
+  it('keeps the previous pre-gone sample when a sweep fails', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(2_000_000)
+    appMetricsMock.mockReturnValue([
+      { pid: 60, type: 'Tab', memory: { workingSetSize: 1024 * 1200 } }
+    ])
+    samplePreGoneProcessMetrics()
+
+    vi.setSystemTime(2_000_000 + 5_000)
+    appMetricsMock.mockImplementationOnce(() => {
+      throw new Error('metrics unavailable')
+    })
+    samplePreGoneProcessMetrics()
+    appMetricsMock.mockReturnValue([{ pid: 1, type: 'Browser', memory: { workingSetSize: 0 } }])
+
+    // Sample and its timestamp both survive the failed sweep.
+    expect(buildProcessGoneCrashDetails({}, 'renderer')).toMatchObject({
+      processMetricsPreGoneRendererWorkingSetMB: 1200,
+      processMetricsPreGoneSampleAgeMs: 5_000
+    })
+  })
+
   it('reports the renderer lifetime peak and private bytes when the metrics carry them', () => {
     const details = collectProcessGoneMetricDetails([
       {
+        // Larger peak/private than any renderer: proves the fields are
+        // renderer-only aggregates, not app-wide maxima.
         pid: 10,
         type: 'Browser',
-        memory: { workingSetSize: 1024 * 200, peakWorkingSetSize: 1024 * 900 }
+        memory: {
+          workingSetSize: 1024 * 200,
+          peakWorkingSetSize: 1024 * 9000,
+          privateBytes: 1024 * 8000
+        }
       },
       {
         pid: 11,

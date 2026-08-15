@@ -279,6 +279,8 @@ export function buildProcessGoneCrashDetails(
   }
   // Why: with the crasher gone, Largest names a survivor — flag that so the
   // live buckets are read as "everyone else", not as the crashed process.
+  // Bucket-level only: a surviving same-type process (second window, another
+  // utility) keeps the flag off even though the crasher is still absent.
   const crashedBucketCountKey = `${PROCESS_METRICS_KEY_PREFIX}${titleCaseBucket(metricTypeBucket(crashedProcessType))}Count`
   if (liveMetricDetails[crashedBucketCountKey] === 0) {
     crashDetails.processMetricsCrashedProcessAbsent = true

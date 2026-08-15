@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const { appMetricsMock } = vi.hoisted(() => ({
+  appMetricsMock: vi.fn((): unknown[] => [])
+}))
+
 vi.mock('electron', () => ({
   app: {
     getVersion: () => '1.2.3-test',
-    getAppMetrics: () => []
+    getAppMetrics: appMetricsMock
   }
 }))
 
@@ -238,6 +242,35 @@ describe('recordProcessGoneCrash', () => {
       'network.mojom.NetworkService',
       'audio.mojom.AudioService'
     ])
+  })
+
+  it('derives the crashed-process-absent flag from the crashed process type', async () => {
+    // Binds event.processType through to the diagnostics bucket check: a live
+    // Utility survivor clears the flag for a Utility crash but not a renderer one.
+    appMetricsMock.mockReturnValue([
+      { pid: 77, type: 'Utility', memory: { workingSetSize: 1024 * 50 } }
+    ])
+
+    const rendererRecord = vi.fn().mockResolvedValue({ id: 'report-r' })
+    recordProcessGoneCrash({ record: rendererRecord } as never, event(), new ProcessGoneDedupe())
+    await vi.waitFor(() => expect(rendererRecord).toHaveBeenCalledOnce())
+    expect(rendererRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        details: expect.objectContaining({ processMetricsCrashedProcessAbsent: true })
+      })
+    )
+
+    const utilityRecord = vi.fn().mockResolvedValue({ id: 'report-u' })
+    recordProcessGoneCrash(
+      { record: utilityRecord } as never,
+      event({ source: 'child', processType: 'Utility', details: { type: 'Utility' } }),
+      new ProcessGoneDedupe()
+    )
+    await vi.waitFor(() => expect(utilityRecord).toHaveBeenCalledOnce())
+    const utilityDetails = (utilityRecord.mock.calls[0][0] as { details: Record<string, unknown> })
+      .details
+    expect(utilityDetails.processMetricsUtilityCount).toBe(1)
+    expect(utilityDetails.processMetricsCrashedProcessAbsent).toBeUndefined()
   })
 
   it('persists a report and flushes the process-gone trace before recovery', async () => {
