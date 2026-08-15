@@ -5,9 +5,9 @@ import {
   collectProcessGoneMetricDetails,
   resetPreGoneProcessMetricsSamplingForTest,
   samplePreGoneProcessMetrics,
-  setSystemMemoryInfoReaderForTest,
   startPreGoneProcessMetricsSampling
 } from './process-gone-diagnostics'
+import { setSystemMemoryInfoReaderForTest } from './gone-time-system-memory'
 
 type MetricFixture = {
   pid: number
@@ -187,8 +187,19 @@ describe('process gone diagnostics', () => {
           privateBytes: 1024 * 8000
         }
       },
+      // Max peak/private sit on the MIDDLE renderer: first-wins and last-wins
+      // aggregation bugs both fail here, only a true max passes.
       {
         pid: 11,
+        type: 'Tab',
+        memory: {
+          workingSetSize: 1024 * 300,
+          peakWorkingSetSize: 1024 * 350,
+          privateBytes: 1024 * 280
+        }
+      },
+      {
+        pid: 12,
         type: 'Tab',
         memory: {
           workingSetSize: 1024 * 800,
@@ -197,9 +208,13 @@ describe('process gone diagnostics', () => {
         }
       },
       {
-        pid: 12,
+        pid: 13,
         type: 'Tab',
-        memory: { workingSetSize: 1024 * 300, peakWorkingSetSize: 1024 * 350 }
+        memory: {
+          workingSetSize: 1024 * 400,
+          peakWorkingSetSize: 1024 * 900,
+          privateBytes: 1024 * 700
+        }
       }
     ])
 
@@ -256,6 +271,146 @@ describe('process gone diagnostics', () => {
     expect(details.processMetricsRendererPrivateMB).toBeUndefined()
     expect(details.processMetricsPreGoneRendererPeakWorkingSetMB).toBe(3300)
     expect(details.processMetricsPreGoneRendererPrivateMB).toBe(2900)
+  })
+
+  it('proves crasher absence by vanished pid when a webview guest keeps the renderer bucket alive', () => {
+    // The common case: webviewTag guests / the dashboard popout leave surviving
+    // renderers, so the bucket count never hits zero for a main-window crash.
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    appMetricsMock.mockReturnValue([
+      { pid: 100, type: 'Browser', memory: { workingSetSize: 1024 * 431 } },
+      { pid: 101, type: 'Tab', memory: { workingSetSize: 1024 * 4380 } },
+      { pid: 102, type: 'Tab', memory: { workingSetSize: 1024 * 300 } }
+    ])
+    samplePreGoneProcessMetrics()
+
+    appMetricsMock.mockReturnValue([
+      { pid: 100, type: 'Browser', memory: { workingSetSize: 1024 * 431 } },
+      { pid: 102, type: 'Tab', memory: { workingSetSize: 1024 * 300 } }
+    ])
+
+    const details = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(details).toMatchObject({
+      processMetricsRendererCount: 1,
+      processMetricsCrashedProcessAbsent: true,
+      processMetricsVanishedCount: 1,
+      processMetricsVanishedWorkingSetMB: 4380,
+      processMetricsVanishedPid: 101
+    })
+  })
+
+  it('sums multiple vanished same-bucket processes and drops the ambiguous pid', () => {
+    appMetricsMock.mockReturnValue([
+      { pid: 100, type: 'Browser', memory: { workingSetSize: 1024 * 400 } },
+      { pid: 101, type: 'Tab', memory: { workingSetSize: 1024 * 2000 } },
+      { pid: 102, type: 'Tab', memory: { workingSetSize: 1024 * 500 } }
+    ])
+    samplePreGoneProcessMetrics()
+    appMetricsMock.mockReturnValue([
+      { pid: 100, type: 'Browser', memory: { workingSetSize: 1024 * 400 } }
+    ])
+
+    const details = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(details.processMetricsVanishedCount).toBe(2)
+    expect(details.processMetricsVanishedWorkingSetMB).toBe(2500)
+    expect(details.processMetricsVanishedPid).toBeUndefined()
+  })
+
+  it('ignores vanished processes outside the crashed bucket', () => {
+    appMetricsMock.mockReturnValue([
+      { pid: 100, type: 'Tab', memory: { workingSetSize: 1024 * 600 } },
+      { pid: 110, type: 'Utility', memory: { workingSetSize: 1024 * 80 } }
+    ])
+    samplePreGoneProcessMetrics()
+    // The Utility vanished, but the crash under report is a renderer whose
+    // process is still enumerable — no absence claim, no Vanished fields.
+    appMetricsMock.mockReturnValue([
+      { pid: 100, type: 'Tab', memory: { workingSetSize: 1024 * 600 } }
+    ])
+
+    const details = buildProcessGoneCrashDetails({}, 'renderer')
+    expect(details.processMetricsCrashedProcessAbsent).toBeUndefined()
+    expect(details.processMetricsVanishedCount).toBeUndefined()
+    expect(details.processMetricsVanishedWorkingSetMB).toBeUndefined()
+  })
+
+  it('degrades honestly in a crash loop when the sweep lands between death and respawn', () => {
+    // Crash-loop reality check: if a sweep fires while the renderer is dead,
+    // the next crash record cannot recover the first crasher's size — but it
+    // must say so (zero PreGone renderer fields), never report a stale value
+    // as if it were the second crasher's.
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    appMetricsMock.mockReturnValue([
+      { pid: 200, type: 'Browser', memory: { workingSetSize: 1024 * 400 } },
+      { pid: 201, type: 'Tab', memory: { workingSetSize: 1024 * 5000 } }
+    ])
+    samplePreGoneProcessMetrics()
+
+    // First death: record #1 carries the true pre-death size.
+    appMetricsMock.mockReturnValue([
+      { pid: 200, type: 'Browser', memory: { workingSetSize: 1024 * 400 } }
+    ])
+    expect(buildProcessGoneCrashDetails({}, 'renderer')).toMatchObject({
+      processMetricsPreGoneRendererWorkingSetMB: 5000,
+      processMetricsVanishedPid: 201
+    })
+
+    // Sweep lands while the renderer is dead, overwriting the sample.
+    vi.setSystemTime(60_000)
+    samplePreGoneProcessMetrics()
+
+    // Second death (respawned pid 202 crashes before any further sweep).
+    vi.setSystemTime(62_000)
+    expect(buildProcessGoneCrashDetails({}, 'renderer')).toMatchObject({
+      processMetricsCrashedProcessAbsent: true,
+      processMetricsPreGoneRendererCount: 0,
+      processMetricsPreGoneRendererWorkingSetMB: 0,
+      processMetricsPreGoneSampleAgeMs: 2_000
+    })
+  })
+
+  it('clamps a garbage negative working set to zero', () => {
+    const details = collectProcessGoneMetricDetails([
+      { pid: 10, type: 'Tab', memory: { workingSetSize: -1024 * 50 } },
+      { pid: 11, type: 'Tab', memory: { workingSetSize: 1024 * 100 } }
+    ])
+    expect(details.processMetricsRendererWorkingSetMB).toBe(100)
+  })
+
+  it('clamps the pre-gone sample age when the clock moves backwards', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(100_000)
+    appMetricsMock.mockReturnValue([
+      { pid: 10, type: 'Tab', memory: { workingSetSize: 1024 * 100 } }
+    ])
+    samplePreGoneProcessMetrics()
+    vi.setSystemTime(95_000)
+
+    expect(buildProcessGoneCrashDetails({}, 'renderer')).toMatchObject({
+      processMetricsPreGoneSampleAgeMs: 0
+    })
+  })
+
+  it('lets live metrics win over a colliding key in the incoming details', () => {
+    appMetricsMock.mockReturnValue([
+      { pid: 21, type: 'Browser', memory: { workingSetSize: 1024 * 100 } }
+    ])
+    const details = buildProcessGoneCrashDetails({ processMetricsCount: 999 }, 'renderer')
+    expect(details.processMetricsCount).toBe(1)
+  })
+
+  it("arms an unref'd interval so sampling never holds the event loop open", () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
+    try {
+      startPreGoneProcessMetricsSampling(60_000)
+      const timer = setIntervalSpy.mock.results[0]?.value as NodeJS.Timeout
+      expect(timer.hasRef()).toBe(false)
+    } finally {
+      setIntervalSpy.mockRestore()
+      resetPreGoneProcessMetricsSamplingForTest()
+    }
   })
 
   it('reports macOS-shaped system memory and omits the fields macOS lacks', () => {

@@ -5,6 +5,7 @@ import {
   type CrashReportDetailValue
 } from '../../shared/crash-reporting'
 import type { ExpectedTeardownScope } from './process-gone-classification'
+import { getSystemMemoryAtGoneDetails, memoryKBFieldMB } from './gone-time-system-memory'
 
 type ProcessMetricLike = {
   pid?: unknown
@@ -54,11 +55,6 @@ function metricTypeBucket(type: unknown): ProcessMetricBucketName {
 function workingSetMB(metric: ProcessMetricLike): number {
   const workingSetKB = safeFiniteNumber(metric.memory?.workingSetSize) ?? 0
   return Math.round(Math.max(0, workingSetKB) / 1024)
-}
-
-function memoryKBFieldMB(value: unknown): number | undefined {
-  const kb = safeFiniteNumber(value)
-  return kb === undefined ? undefined : Math.round(Math.max(0, kb) / 1024)
 }
 
 function emptyBuckets(): Record<ProcessMetricBucketName, ProcessMetricBucket> {
@@ -130,76 +126,27 @@ export function collectProcessGoneMetricDetails(metrics: ProcessMetricLike[]): C
   return details
 }
 
-function getProcessGoneMetricDetails(): CrashReportDetails {
+type LiveProcessGoneMetrics = {
+  details: CrashReportDetails
+  // null = metrics unreadable, so pid-level absence cannot be proven.
+  pids: Set<number> | null
+}
+
+function getLiveProcessGoneMetrics(): LiveProcessGoneMetrics {
   try {
-    return collectProcessGoneMetricDetails(app.getAppMetrics())
+    const metrics = app.getAppMetrics()
+    const pids = new Set<number>()
+    for (const metric of metrics) {
+      const pid = safeFiniteNumber(metric.pid)
+      if (pid !== undefined) {
+        pids.add(pid)
+      }
+    }
+    return { details: collectProcessGoneMetricDetails(metrics), pids }
   } catch (error) {
     const errorName = error instanceof Error ? error.name : typeof error
-    return { processMetricsError: errorName }
+    return { details: { processMetricsError: errorName }, pids: null }
   }
-}
-
-// ─── System memory at gone time ─────────────────────────────────────
-// Why: the system outlives the crashed process, so this IS sampleable at
-// process-gone — it separates "renderer grew huge" from "machine out of
-// memory/commit", which the per-process buckets alone cannot.
-// Platform honesty: swap* exist on Windows/Linux only. On macOS `free` is
-// near-meaningless (file cache and compression keep it low on healthy
-// machines); fileBacked/purgeable are the only reclaimability proxy this API
-// gives there, and none of these fields answers "was the machine under
-// pressure" on macOS — that needs a signal Electron does not expose.
-
-type SystemMemoryInfoLike = {
-  total?: unknown
-  free?: unknown
-  swapTotal?: unknown
-  swapFree?: unknown
-  fileBacked?: unknown
-  purgeable?: unknown
-}
-
-type SystemMemoryInfoReader = () => SystemMemoryInfoLike | null
-
-function readElectronSystemMemoryInfo(): SystemMemoryInfoLike | null {
-  const read = (process as NodeJS.Process & { getSystemMemoryInfo?: () => SystemMemoryInfoLike })
-    .getSystemMemoryInfo
-  if (typeof read !== 'function') {
-    return null
-  }
-  try {
-    return read.call(process)
-  } catch {
-    return null
-  }
-}
-
-let systemMemoryInfoReader: SystemMemoryInfoReader = readElectronSystemMemoryInfo
-
-export function setSystemMemoryInfoReaderForTest(reader: SystemMemoryInfoReader | null): void {
-  systemMemoryInfoReader = reader ?? readElectronSystemMemoryInfo
-}
-
-function getSystemMemoryAtGoneDetails(): CrashReportDetails {
-  const info = systemMemoryInfoReader()
-  if (!info) {
-    return {}
-  }
-  const details: CrashReportDetails = {}
-  const fields: readonly [keyof SystemMemoryInfoLike, string][] = [
-    ['total', 'systemMemoryTotalMB'],
-    ['free', 'systemMemoryFreeMB'],
-    ['swapTotal', 'systemMemorySwapTotalMB'],
-    ['swapFree', 'systemMemorySwapFreeMB'],
-    ['fileBacked', 'systemMemoryFileBackedMB'],
-    ['purgeable', 'systemMemoryPurgeableMB']
-  ]
-  for (const [field, key] of fields) {
-    const mb = memoryKBFieldMB(info[field])
-    if (mb !== undefined) {
-      details[key] = mb
-    }
-  }
-  return details
 }
 
 // ─── Pre-gone metric sampling ───────────────────────────────────────
@@ -210,18 +157,43 @@ function getSystemMemoryAtGoneDetails(): CrashReportDetails {
 
 export const PROCESS_METRICS_PRE_GONE_SAMPLE_INTERVAL_MS = 60_000
 
+type PreGoneSampledProcess = {
+  pid: number
+  bucket: ProcessMetricBucketName
+  workingSetMB: number
+}
+
 type PreGoneProcessMetricsSample = {
   details: CrashReportDetails
+  processes: PreGoneSampledProcess[]
   sampledAtMs: number
 }
 
 let preGoneSample: PreGoneProcessMetricsSample | null = null
 let preGoneSampleTimer: ReturnType<typeof setInterval> | null = null
 
+function sampledProcessIdentities(metrics: ProcessMetricLike[]): PreGoneSampledProcess[] {
+  const processes: PreGoneSampledProcess[] = []
+  for (const metric of metrics) {
+    const pid = safeFiniteNumber(metric.pid)
+    if (pid === undefined) {
+      continue
+    }
+    processes.push({
+      pid,
+      bucket: metricTypeBucket(metric.type),
+      workingSetMB: workingSetMB(metric)
+    })
+  }
+  return processes
+}
+
 export function samplePreGoneProcessMetrics(nowMs: number = Date.now()): void {
   try {
+    const metrics = app.getAppMetrics()
     preGoneSample = {
-      details: collectProcessGoneMetricDetails(app.getAppMetrics()),
+      details: collectProcessGoneMetricDetails(metrics),
+      processes: sampledProcessIdentities(metrics),
       sampledAtMs: nowMs
     }
   } catch {
@@ -271,7 +243,7 @@ export function buildProcessGoneCrashDetails(
   const sanitizedDetails = sanitizeCrashReportDetails(details)
   // Why: low-JS-heap renderer kills can still be native/process memory pressure.
   // Capture Electron process buckets at process-gone time before recovery reloads.
-  const liveMetricDetails = getProcessGoneMetricDetails()
+  const { details: liveMetricDetails, pids: livePids } = getLiveProcessGoneMetrics()
   const crashDetails: CrashReportDetails = {
     ...sanitizedDetails,
     ...liveMetricDetails,
@@ -279,11 +251,30 @@ export function buildProcessGoneCrashDetails(
   }
   // Why: with the crasher gone, Largest names a survivor — flag that so the
   // live buckets are read as "everyone else", not as the crashed process.
-  // Bucket-level only: a surviving same-type process (second window, another
-  // utility) keeps the flag off even though the crasher is still absent.
-  const crashedBucketCountKey = `${PROCESS_METRICS_KEY_PREFIX}${titleCaseBucket(metricTypeBucket(crashedProcessType))}Count`
-  if (liveMetricDetails[crashedBucketCountKey] === 0) {
+  // Same-bucket survivors are the norm (webview guests, the dashboard popout,
+  // origin-bar views), so a zero bucket count alone under-detects: also treat
+  // a sampled same-bucket pid that vanished from the live set as proof. That
+  // still misses a crasher younger than the last sweep, and Vanished can
+  // include a legitimately-closed same-bucket process — Pid is only emitted
+  // when the vanished process is unambiguous.
+  const crashedBucket = metricTypeBucket(crashedProcessType)
+  const crashedBucketCountKey = `${PROCESS_METRICS_KEY_PREFIX}${titleCaseBucket(crashedBucket)}Count`
+  const vanished =
+    livePids && preGoneSample
+      ? preGoneSample.processes.filter((p) => p.bucket === crashedBucket && !livePids.has(p.pid))
+      : []
+  if (liveMetricDetails[crashedBucketCountKey] === 0 || vanished.length > 0) {
     crashDetails.processMetricsCrashedProcessAbsent = true
+  }
+  if (vanished.length > 0) {
+    crashDetails.processMetricsVanishedCount = vanished.length
+    crashDetails.processMetricsVanishedWorkingSetMB = vanished.reduce(
+      (sum, p) => sum + p.workingSetMB,
+      0
+    )
+    if (vanished.length === 1) {
+      crashDetails.processMetricsVanishedPid = vanished[0].pid
+    }
   }
   if (preGoneSample) {
     Object.assign(crashDetails, preGoneSampleDetails(preGoneSample, Date.now()))
