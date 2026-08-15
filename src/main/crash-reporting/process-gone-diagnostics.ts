@@ -255,14 +255,16 @@ export function buildProcessGoneCrashDetails(
   // into a different bucket — also proves absence. The proof is stateless and
   // holds for every record of a crash loop. False negatives remain when the
   // crasher was younger than the last sweep, or when its pid was recycled
-  // into a NEW same-bucket process inside the sweep window.
+  // into a NEW same-bucket process inside the sweep window; a legitimately
+  // closed sampled process can still trip the flag if the crasher's own row
+  // somehow survives in the live enumeration.
   const crashedBucket = metricTypeBucket(crashedProcessType)
   const crashedBucketCountKey = `${PROCESS_METRICS_KEY_PREFIX}${titleCaseBucket(crashedBucket)}Count`
   const sampledSameBucketPidVanished = Boolean(
     livePidBuckets &&
-      preGoneSample?.processes.some(
-        (p) => p.bucket === crashedBucket && livePidBuckets.get(p.pid) !== p.bucket
-      )
+    preGoneSample?.processes.some(
+      (p) => p.bucket === crashedBucket && livePidBuckets.get(p.pid) !== p.bucket
+    )
   )
   if (liveMetricDetails[crashedBucketCountKey] === 0 || sampledSameBucketPidVanished) {
     crashDetails.processMetricsCrashedProcessAbsent = true

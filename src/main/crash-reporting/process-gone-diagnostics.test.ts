@@ -289,10 +289,12 @@ describe('process gone diagnostics', () => {
     // the proof instead.
     vi.useFakeTimers()
     vi.setSystemTime(1_000_000)
+    // Guest enumerated BEFORE the crasher: Largest must carry the crasher's
+    // individual working set, never the renderer bucket's running sum.
     appMetricsMock.mockReturnValue([
       { pid: 100, type: 'Browser', memory: { workingSetSize: 1024 * 431 } },
-      { pid: 101, type: 'Tab', memory: { workingSetSize: 1024 * 4380 } },
-      { pid: 102, type: 'Tab', memory: { workingSetSize: 1024 * 300 } }
+      { pid: 102, type: 'Tab', memory: { workingSetSize: 1024 * 300 } },
+      { pid: 101, type: 'Tab', memory: { workingSetSize: 1024 * 4380 } }
     ])
     samplePreGoneProcessMetrics()
 
@@ -306,9 +308,13 @@ describe('process gone diagnostics', () => {
       processMetricsRendererCount: 1,
       processMetricsCrashedProcessAbsent: true,
       // The live bucket carries the surviving guest only; the crasher's size
-      // reaches the record through the PreGone mirrors.
+      // reaches the record through the PreGone mirrors: the bucket total sums
+      // crasher + guest, while Largest names the crasher's own size.
       processMetricsRendererWorkingSetMB: 300,
-      processMetricsPreGoneRendererWorkingSetMB: 4680
+      processMetricsPreGoneRendererWorkingSetMB: 4680,
+      processMetricsPreGoneLargestPid: 101,
+      processMetricsPreGoneLargestType: 'Tab',
+      processMetricsPreGoneLargestWorkingSetMB: 4380
     })
   })
 
