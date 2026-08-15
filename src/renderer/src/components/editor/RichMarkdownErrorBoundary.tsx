@@ -1,6 +1,6 @@
 import React from 'react'
 import { recordRendererCrashBreadcrumb } from '@/lib/crash-breadcrumb-recorder'
-import { isLazyChunkLoadError } from '@/lib/lazy-with-retry'
+import { advanceLazyChunkRetryEpoch, isLazyChunkLoadError } from '@/lib/lazy-with-retry'
 import { reportReactErrorBoundaryCrash } from '@/lib/react-error-boundary-reporting'
 import { translate } from '@/i18n/i18n'
 
@@ -56,6 +56,8 @@ export class RichMarkdownErrorBoundary extends React.Component<Props, State> {
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
     console.error('[RichMarkdownEditor] render crash contained by boundary', error, info)
     if (isLazyChunkLoadError(error)) {
+      // Why: lets the next reset (Retry or fileId re-key) mint a lazy that can load again.
+      advanceLazyChunkRetryEpoch()
       const cause = describeLazyChunkCause(error)
       if (!recordedLazyChunkCauses.has(cause)) {
         recordedLazyChunkCauses.add(cause)
