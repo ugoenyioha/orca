@@ -1,0 +1,91 @@
+src/cli/handlers/orchestration/message-check-expected-dispatch.test.ts
+  s_18613289801ec3::t_3272bcdd9e9018 1-67
+src/main/startup/headless-serve-ssh-registration.test.ts
+  s_323e7052f22183::t_8bee2d01e8bb57 14-15,23,30-32,35-37,47-55,68-79,87,89-92,123-125,127-133,145-146,156-157,161-166,168
+  s_323e7052f22183::t_bbbefa2c925d23 7-13,16,19-22,33-34,126,134-144,147-155,158-160,167
+src/main/runtime/rpc/orchestration-session-caller.ts
+  s_18613289801ec3::t_3272bcdd9e9018 55
+src/shared/orchestration-rpc-contract.test.ts
+  s_18613289801ec3::t_3272bcdd9e9018 29-30,56
+src/cli/specs/orchestration.ts
+  s_18613289801ec3::t_3272bcdd9e9018 105
+src/cli/handlers/orchestration/message-check-handler.ts
+  s_18613289801ec3::t_3272bcdd9e9018 5,43-62,72,75,92-97
+src/cli/runtime/client.ts
+  s_18613289801ec3::t_3272bcdd9e9018 202
+src/main/runtime/rpc/methods/orchestration/messaging/check-expected-dispatch-fence.test.ts
+  s_18613289801ec3::t_3272bcdd9e9018 1-207
+src/main/runtime/rpc/orchestration-legacy-compatibility.ts
+  s_18613289801ec3::t_3272bcdd9e9018 32,274
+src/shared/orchestration-rpc-contract.ts
+  s_18613289801ec3::t_3272bcdd9e9018 55
+src/shared/rpc-contract/orchestration-params.ts
+  s_18613289801ec3::t_3272bcdd9e9018 34,66-73
+  s_323e7052f22183::t_bc17e442c99298 74
+src/main/runtime/rpc/orchestration-session-caller.test.ts
+  s_18613289801ec3::t_3272bcdd9e9018 66,105-107
+src/main/runtime/rpc/methods/managed-server.ts
+  s_323e7052f22183::t_e0f7323cab2da7 1,8-10,16-17,24-46,52,58-60,63-67,73,80,86,92,99
+  s_323e7052f22183::t_35c9d4f014d698 61-62
+src/main/runtime/rpc/methods/orchestration/messaging/check-methods.ts
+  s_18613289801ec3::t_3272bcdd9e9018 3,17,45-56,125-131
+src/shared/orchestration-runtime-capabilities.ts
+  s_18613289801ec3::t_3272bcdd9e9018 21-23,25
+src/main/runtime/runtime-rpc/runtime-rpc-long-poll.ts
+  s_18613289801ec3::t_3272bcdd9e9018 83
+src/main/runtime/managed-server-actions-registry.ts
+  s_323e7052f22183::t_fabc02c7fe64e1 3-6,17-20,34-41,44,47-54,57-61,71
+  s_323e7052f22183::t_66bb64a907a8cb 62-70
+config/scripts/relay-cli-artifact-probe.mjs
+  s_18613289801ec3::t_3272bcdd9e9018 1-115
+src/shared/host-runtime-capabilities.ts
+  s_323e7052f22183::t_9ca00a6fc47ced 11-13
+  s_323e7052f22183::t_9c4466ade97aa1 14-17
+src/main/startup/headless-serve-ssh-registration.ts
+  s_323e7052f22183::t_27c5a060e2e615 4-5,10-13,21-22,38-39,42-43,45-49
+  s_323e7052f22183::t_da656195d1318b 6-9,23-26,37,40,44,50
+  s_323e7052f22183::t_39734fb00c8968 30-36,41
+src/main/runtime/rpc/methods/orchestration/schemas.ts
+  s_18613289801ec3::t_3272bcdd9e9018 19
+src/main/runtime/orca-runtime-tests/managed-server-capability.spec.ts
+  s_323e7052f22183::t_335612e48d7153 1,5-7,9-12,15-16,20-22,25-38
+src/main/runtime/rpc/methods/managed-server.test.ts
+  s_323e7052f22183::t_c58db447d65b8b 6,101
+  s_323e7052f22183::t_6a6ec081a342d0 9,102-174
+src/cli/handlers/managed-server.test.ts
+  s_323e7052f22183::t_dbe7edb353df87 3-7,15,283-353
+src/cli/handlers/managed-server.ts
+  s_323e7052f22183::t_c200e6b4d362b3 11-15,30-36,42-50,57-59,62-66,78-81
+src/main/ipc/runtime-environments/runtime-environments.ts
+  s_323e7052f22183::t_6edb073024a1d6 98-114,162
+src/main/runtime/orca-runtime-get-status.ts
+  s_323e7052f22183::t_fb7b8b0d75c1c1 52,144
+src/main/runtime/rpc/errors.ts
+  s_323e7052f22183::t_be80f9ece7f8ce 36,116-117
+src/shared/rpc-contract/rpc-params-catalog.generated.ts
+  s_323e7052f22183::t_e78d80172ae724 452,1206
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "104442506a3b949892da6abce9dcf1a14517936c",
+  "prompts": {},
+  "sessions": {
+    "s_18613289801ec3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f9f720b8cffeL2HWIY7KGZEVHq",
+        "model": "anthropic/claude-fable-5-1"
+      },
+      "human_author": "Claude <claude@anthropic.com>"
+    },
+    "s_323e7052f22183": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_e6aa3b66cffdBZqTuXUH9uamiM",
+        "model": "anthropic/claude-fable-5-1"
+      },
+      "human_author": "Claude <claude@anthropic.com>"
+    }
+  }
+}
