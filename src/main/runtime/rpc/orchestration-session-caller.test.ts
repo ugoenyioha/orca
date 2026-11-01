@@ -63,6 +63,7 @@ const MINIMAL_PARAMS: Readonly<Record<string, Record<string, unknown>>> = {
   'orchestration.runUse': { id: 'run_missing' },
   'orchestration.runCurrent': {},
   'orchestration.check': {},
+  'orchestration.checkDurable': { expectedDispatchId: 'ctx_missing' },
   'orchestration.send': { subject: 's', to: 'term_worker' },
   'orchestration.reply': { id: 'msg_missing', body: 'b' },
   'orchestration.ask': { question: 'q', to: 'term_worker' },
@@ -101,9 +102,9 @@ describe('orchestration session callers at the dispatch entry', () => {
       })
       .sort()
 
-    // The population: 44 registered methods carrying 28 party-naming fields.
-    expect(registry.size).toBe(44)
-    expect(partyNaming).toHaveLength(28)
+    // The strict mailbox method adds one independently classified caller field.
+    expect(registry.size).toBe(45)
+    expect(partyNaming).toHaveLength(29)
     expect(partyNaming).toEqual(
       [
         ...Object.entries(ORCHESTRATION_CALLER_PARAM).map(

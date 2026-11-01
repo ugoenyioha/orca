@@ -95,6 +95,23 @@ export function invalidateRuntimeEnvironmentTransport(environmentId: string): Pr
   )
 }
 
+/**
+ * Pairing repair and refusal recovery for managed servers, shared by the desktop (here) and a
+ * headless `orca serve` (headless-serve-ssh-registration.ts). Why both: the update census can
+ * repair a refused pairing mid-update, and the repaired peer must retire every transport
+ * authenticated as the former one, whether or not a window ever attached.
+ */
+export function installManagedOrcadPairingRepairWiring(): void {
+  setManagedOrcadPairingRepairedListener(invalidateRuntimeEnvironmentTransport)
+  setRefusedPairingHandlers({
+    recover: (environmentId) => recoverRefusedManagedPairing(getUserDataPath(), environmentId),
+    sharedControl: (environmentId) =>
+      handleManagedSharedControlRefusal(getUserDataPath(), environmentId),
+    connectRequested: (environmentId) =>
+      forgetFailedManagedOrcadPairingRepair(getUserDataPath(), environmentId)
+  })
+}
+
 /** CLI update/rollback re-pairing needs a new status owner to publish the saved revision to renderers. */
 function reactivateRuntimeEnvironmentStatus(environmentId: string): void {
   const userDataPath = getUserDataPath()
@@ -142,14 +159,7 @@ export function registerRuntimeEnvironmentHandlers(store: Store): void {
     invalidateTransport: invalidateRuntimeEnvironmentTransport
   })
   registerRuntimeEnvironmentPassiveHandlers(getUserDataPath)
-  setManagedOrcadPairingRepairedListener(invalidateRuntimeEnvironmentTransport)
-  setRefusedPairingHandlers({
-    recover: (environmentId) => recoverRefusedManagedPairing(getUserDataPath(), environmentId),
-    sharedControl: (environmentId) =>
-      handleManagedSharedControlRefusal(getUserDataPath(), environmentId),
-    connectRequested: (environmentId) =>
-      forgetFailedManagedOrcadPairingRepair(getUserDataPath(), environmentId)
-  })
+  installManagedOrcadPairingRepairWiring()
   for (const environment of listEnvironments(getUserDataPath())) {
     if (
       !isRuntimeEnvironmentManuallyDisconnected(environment.id) &&

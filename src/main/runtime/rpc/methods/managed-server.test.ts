@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import {
   registerManagedServerActions,
+  registerManagedServerMaintenanceActions,
   type ManagedServerActions
 } from '../../managed-server-actions-registry'
+import { MANAGED_SERVER_ACTION_UNAVAILABLE_CODE } from '../../../../shared/host-runtime-capabilities'
 import { RpcDispatcher } from '../dispatcher'
 import type { RpcRequest } from '../core'
 import { MANAGED_SERVER_METHODS } from './managed-server'
@@ -94,5 +96,79 @@ describe('managed server RPC', () => {
     expect(registered.recover).toHaveBeenLastCalledWith('build-box', true)
     await dispatcher().dispatch(request('managedServer.recover', { selector: 'build-box' }))
     expect(registered.recover).toHaveBeenLastCalledWith('build-box', false)
+  })
+})
+
+// B1/B2: a headless serve registers only status and update. Every other method, and update
+// with force, must refuse on the wire with a stable code and never reach a lifecycle action.
+describe('managed server RPC on a maintenance-only (headless) registration', () => {
+  function maintenance() {
+    const registered = actions()
+    registerManagedServerMaintenanceActions({
+      status: registered.status,
+      update: registered.update
+    })
+    return registered
+  }
+
+  it('serves status and a plain update through the dispatcher', async () => {
+    const registered = maintenance()
+    await expect(
+      dispatcher().dispatch(request('managedServer.update', { selector: 'build-box' }))
+    ).resolves.toMatchObject({ ok: true, result: { outcome: 'deferred' } })
+    expect(registered.update).toHaveBeenCalledWith('build-box', false)
+    await dispatcher().dispatch(request('managedServer.status', { selector: 'build-box' }))
+    expect(registered.status).toHaveBeenCalledWith('build-box')
+  })
+
+  it('refuses update --force on the wire without calling update', async () => {
+    const registered = maintenance()
+    await expect(
+      dispatcher().dispatch(
+        request('managedServer.update', { selector: 'build-box', force: true })
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: MANAGED_SERVER_ACTION_UNAVAILABLE_CODE,
+        data: { action: 'update --force', registration: 'maintenance' }
+      }
+    })
+    expect(registered.update).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['managedServer.rollback', 'rollback', { selector: 'build-box' }],
+    ['managedServer.recover', 'recover', { selector: 'build-box', acceptChangedState: true }],
+    ['managedServer.stop', 'stop', { selector: 'build-box' }],
+    ['managedServer.cancelStop', 'cancelStop', { selector: 'build-box' }],
+    ['managedServer.forget', 'forget', { selector: 'build-box' }]
+  ] as const)('refuses %s with managed_server_action_unavailable', async (method, action, params) => {
+    const registered = maintenance()
+    await expect(dispatcher().dispatch(request(method, params))).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: MANAGED_SERVER_ACTION_UNAVAILABLE_CODE,
+        data: { action, registration: 'maintenance' }
+      }
+    })
+    for (const lifecycle of [
+      registered.rollback,
+      registered.recover,
+      registered.stop,
+      registered.cancelStop,
+      registered.forget
+    ]) {
+      expect(lifecycle).not.toHaveBeenCalled()
+    }
+  })
+
+  it('still rejects a missing selector before the per-action guard', async () => {
+    maintenance()
+    const response = await dispatcher().dispatch(request('managedServer.stop', {}))
+    expect(response).toMatchObject({ ok: false })
+    expect(response).not.toMatchObject({
+      error: { code: MANAGED_SERVER_ACTION_UNAVAILABLE_CODE }
+    })
   })
 })

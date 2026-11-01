@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ORCAD_RECOVERY_CHANGED_STATE_CODE } from '../../shared/orcad-managed-runtime'
-import { MANAGED_SERVER_RUNTIME_CAPABILITY } from '../../shared/protocol-version'
+import {
+  MANAGED_SERVER_ACTION_UNAVAILABLE_CODE,
+  MANAGED_SERVER_MAINTENANCE_RUNTIME_CAPABILITY,
+  MANAGED_SERVER_RUNTIME_CAPABILITY
+} from '../../shared/protocol-version'
 import { RuntimeClientError } from '../runtime-client'
 import { MANAGED_SERVER_HANDLERS } from './managed-server'
 
@@ -8,7 +12,7 @@ function envelope(result: unknown) {
   return { id: 'r', ok: true, result, _meta: { runtimeId: 'runtime-1' } }
 }
 
-function client(result: unknown, capabilities = [MANAGED_SERVER_RUNTIME_CAPABILITY]) {
+function client(result: unknown, capabilities: string[] = [MANAGED_SERVER_RUNTIME_CAPABILITY]) {
   return vi.fn(async (method: string) =>
     method === 'status.get' ? envelope({ capabilities }) : envelope(result)
   )
@@ -274,5 +278,76 @@ describe('managed server CLI verbs', () => {
       { selector: 'build-box', acceptChangedState: true },
       { timeoutMs: 1_200_000 }
     )
+  })
+})
+
+describe('managed server CLI verbs against a maintenance-only (headless) runtime', () => {
+  const maintenance = [MANAGED_SERVER_MAINTENANCE_RUNTIME_CAPABILITY]
+  const current = {
+    outcome: 'already-current',
+    environment: { id: 'env-1', name: 'build-box' },
+    activeVersion: '1.4.240'
+  }
+
+  it('checks status and updates without force', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const status = client({ environmentId: 'env-1', activeVersion: '1.4.240', terminals: {} }, maintenance)
+    await run('environment status', status, [])
+    expect(status).toHaveBeenCalledWith('managedServer.status', { selector: 'build-box' }, undefined)
+
+    const update = client(current, maintenance)
+    await run('environment update', update, [])
+    expect(update).toHaveBeenCalledWith(
+      'managedServer.update',
+      { selector: 'build-box', force: false },
+      { timeoutMs: 1_200_000 }
+    )
+    expect(log).toHaveBeenCalled()
+  })
+
+  // B2: force must not even be sent; the host refuses it too, but the CLI explains first.
+  it('refuses --force before calling the runtime', async () => {
+    const call = client(current, maintenance)
+    await expect(run('environment update', call, [['force', true]])).rejects.toMatchObject({
+      code: 'incompatible_runtime',
+      message: expect.stringContaining('--force is desktop-only')
+    })
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call).not.toHaveBeenCalledWith('managedServer.update', expect.anything(), expect.anything())
+  })
+
+  // B1: the subset capability never implies the full suite.
+  it.each([
+    ['environment rollback', []],
+    ['environment recover', []],
+    ['environment stop', [['yes', true]]],
+    ['environment forget', [['yes', true]]],
+    ['environment cancel-stop', []]
+  ] as [string, [string, string | boolean][]][])('refuses %s without the full capability', async (command, flags) => {
+    const call = client({ outcome: 'none' }, maintenance)
+    await expect(run(command, call, flags)).rejects.toMatchObject({
+      code: 'incompatible_runtime',
+      message: expect.stringContaining('only check and update')
+    })
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads the host’s managed_server_action_unavailable as the same refusal', async () => {
+    const call = vi.fn(async (method: string) => {
+      if (method === 'status.get') {
+        return envelope({ capabilities: [MANAGED_SERVER_RUNTIME_CAPABILITY] })
+      }
+      throw new RuntimeClientError(MANAGED_SERVER_ACTION_UNAVAILABLE_CODE, 'no action')
+    })
+    await expect(run('environment stop', call, [['yes', true]])).rejects.toMatchObject({
+      code: 'incompatible_runtime'
+    })
+  })
+
+  it('still refuses a runtime advertising neither capability', async () => {
+    const call = client(current, [])
+    await expect(run('environment update', call, [])).rejects.toMatchObject({
+      code: 'incompatible_runtime'
+    })
   })
 })

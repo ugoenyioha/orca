@@ -26,6 +26,8 @@ describe('orchestration RPC contract', () => {
     ['orchestration.federationImport', {}],
     ['orchestration.federationStop', {}],
     ['orchestration.check', {}],
+    ['orchestration.checkDurable', { expectedDispatchId: 'ctx_1' }],
+    ['orchestration.checkDurable', { run: 'run_1', peek: true, ack: 'delivery_1' }],
     ['orchestration.check', { wait: true }],
     ['orchestration.check', { unread: true }],
     ['orchestration.check', { peek: true, ack: 'delivery_1' }],
@@ -51,6 +53,7 @@ describe('orchestration RPC contract', () => {
     ['orchestration.federationReadOutput', {}],
     ['orchestration.dispatch', { dryRun: true }],
     ['orchestration.check', { peek: true }],
+    ['orchestration.checkDurable', { expectedDispatchId: 'ctx_1', peek: true }],
     ['orchestration.check', { all: true }],
     ['orchestration.check', { unread: false }]
   ])('classifies %s as read-only', (method, params) => {

@@ -2,6 +2,7 @@ import type { CommandHandler } from '../../dispatch'
 import { printResult } from '../../format'
 import { getOptionalStringFlag } from '../../flags'
 import { RuntimeClientError } from '../../runtime-client'
+import { ORCHESTRATION_CHECK_MANUAL_ACK_EXPECTED_DISPATCH_RUNTIME_CAPABILITY } from '../../../shared/orchestration-runtime-capabilities'
 import type { RuntimeRpcSuccess } from '../../runtime-client'
 import {
   formatOrchestrationCheckText,
@@ -39,6 +40,26 @@ export const ORCHESTRATION_CHECK_HANDLER: Record<string, CommandHandler> = {
       )
     }
     const timeoutMs = getOptionalPositiveIntegerValueFlag(flags, 'timeout-ms')
+    const expectedDispatchId = getOptionalStringFlag(flags, 'expected-dispatch')
+    const durable = flags.has('durable') || expectedDispatchId !== undefined
+    const run = getOptionalStringFlag(flags, 'run')
+    if (durable) {
+      if (Boolean(run?.trim()) === Boolean(expectedDispatchId?.trim())) {
+        throw new RuntimeClientError('invalid_argument', 'Durable check requires exactly one Run or expected Dispatch.')
+      }
+      const status = await client.getCliStatus()
+      if (
+        !status.result.runtime.reachable ||
+        !status.result.runtime.capabilities?.includes(
+          ORCHESTRATION_CHECK_MANUAL_ACK_EXPECTED_DISPATCH_RUNTIME_CAPABILITY
+        )
+      ) {
+        throw new RuntimeClientError(
+          'incompatible_runtime',
+          'This runtime cannot safely fence a manual-ACK Dispatch check. No mailbox read was sent.'
+        )
+      }
+    }
     const explicitTerminal = getOptionalStringFlag(flags, 'terminal')
     const terminal = await resolveOrchestrationTerminalHandle(flags, cwd, client, 'terminal')
     // Sessions use their injected id; inherited pane keys belong to a different caller.
@@ -48,9 +69,10 @@ export const ORCHESTRATION_CHECK_HANDLER: Record<string, CommandHandler> = {
     const stopKeepalive = wait ? startCheckKeepalive(timeoutMs) : null
     let result: Awaited<ReturnType<typeof client.call<CheckResult>>>
     try {
-      result = await callOrchestrationMutation<CheckResult>(client, flags, 'orchestration.check', {
+      result = await callOrchestrationMutation<CheckResult>(client, flags, durable ? 'orchestration.checkDurable' : 'orchestration.check', {
         terminal,
         terminalPaneKey: paneKey || undefined,
+        expectedDispatchId,
         // unread:false makes hosts that ignore peek fall back to non-consuming all mode.
         unread: flags.has('unread') ? true : peek ? false : undefined,
         peek: peek ? true : undefined,
@@ -66,6 +88,12 @@ export const ORCHESTRATION_CHECK_HANDLER: Record<string, CommandHandler> = {
       })
     } finally {
       stopKeepalive?.()
+    }
+    if (durable && result.result.legacyCompatibility) {
+      throw new RuntimeClientError(
+        'incompatible_runtime',
+        'Guarded mailbox response cannot use compatibility acknowledgement. No follow-up ACK was sent.'
+      )
     }
     if (peek) {
       result = filterLegacyPeekResult(result, wait)

@@ -29,6 +29,7 @@ const COORDINATOR_PREFLIGHT_METHODS = new Set([
 ])
 
 const CURRENT_AUTHORITY_PREFLIGHT_METHODS = new Set([
+  'orchestration.checkDurable',
   ...COORDINATOR_PREFLIGHT_METHODS,
   'orchestration.ask'
 ])
@@ -270,7 +271,7 @@ function currentCallerHandle(method: string, params: Record<string, unknown>): s
   ) {
     return stringValue(params.callerTerminalHandle)
   }
-  if (method === 'orchestration.check') {
+  if (method === 'orchestration.check' || method === 'orchestration.checkDurable') {
     return stringValue(params.terminal)
   }
   return stringValue(params.from)

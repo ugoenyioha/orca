@@ -52,7 +52,7 @@ export function isOrchestrationMutation(method: string, params: unknown): boolea
   if (isRetiredOrchestrationMethod(method)) {
     return true
   }
-  if (method === 'orchestration.check') {
+  if (method === 'orchestration.check' || method === 'orchestration.checkDurable') {
     if (hasStringProperty(params, 'ack')) {
       return true
     }

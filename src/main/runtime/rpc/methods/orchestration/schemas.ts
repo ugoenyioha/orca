@@ -16,6 +16,7 @@ import {
 export {
   AskParams,
   CheckParams,
+  DurableCheckParams,
   DispatchParams,
   DispatchShowParams,
   InboxParams,

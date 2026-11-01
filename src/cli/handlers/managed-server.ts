@@ -8,7 +8,11 @@ import type {
   OrcadManagedStopResult
 } from '../../shared/orcad-managed-runtime'
 import { ORCAD_RECOVERY_CHANGED_STATE_CODE } from '../../shared/orcad-managed-runtime'
-import { MANAGED_SERVER_RUNTIME_CAPABILITY } from '../../shared/protocol-version'
+import {
+  MANAGED_SERVER_ACTION_UNAVAILABLE_CODE,
+  MANAGED_SERVER_MAINTENANCE_RUNTIME_CAPABILITY,
+  MANAGED_SERVER_RUNTIME_CAPABILITY
+} from '../../shared/protocol-version'
 import type { RuntimeStatus } from '../../shared/runtime-types'
 import type { CommandHandler, HandlerContext } from '../dispatch'
 import { getRequiredStringFlag } from '../flags'
@@ -23,9 +27,25 @@ const UNSUPPORTED_MESSAGE =
 // Windows promotion and readiness waits can take ten minutes; allow headroom on slow hosts.
 export const MANAGED_SERVER_ACTION_TIMEOUT_MS = 20 * 60_000
 const READ_ONLY_METHODS = new Set(['managedServer.status'])
+// Why per action: a headless `orca serve` advertises only the maintenance subset. The full
+// capability implies it; the reverse must never be assumed, or stop/forget would be offered there.
+const MAINTENANCE_METHODS = new Set(['managedServer.status', 'managedServer.update'])
+const MAINTENANCE_ONLY_MESSAGE =
+  'This Orca runtime can only check and update the servers it deployed. Run this on the computer whose Orca desktop app deployed the server.'
+const FORCE_MAINTENANCE_ONLY_MESSAGE =
+  '--force is desktop-only: run it on the computer whose Orca desktop app deployed the server. This runtime only rolls servers forward without lifting a refusal or restarting over live terminals.'
 
 function unsupported(): RuntimeClientError {
   return new RuntimeClientError('incompatible_runtime', UNSUPPORTED_MESSAGE)
+}
+
+function maintenanceOnly(method: string, params: Record<string, unknown>): RuntimeClientError {
+  return new RuntimeClientError(
+    'incompatible_runtime',
+    method === 'managedServer.update' && params.force === true
+      ? FORCE_MAINTENANCE_ONLY_MESSAGE
+      : MAINTENANCE_ONLY_MESSAGE
+  )
 }
 
 async function callManagedServer<TResult>(
@@ -34,8 +54,15 @@ async function callManagedServer<TResult>(
   params: Record<string, unknown>
 ): Promise<RuntimeRpcSuccess<TResult>> {
   const status = await client.call<RuntimeStatus>('status.get')
-  if (!status.result.capabilities?.includes(MANAGED_SERVER_RUNTIME_CAPABILITY)) {
+  const capabilities = status.result.capabilities ?? []
+  const full = capabilities.includes(MANAGED_SERVER_RUNTIME_CAPABILITY)
+  if (!full && !capabilities.includes(MANAGED_SERVER_MAINTENANCE_RUNTIME_CAPABILITY)) {
     throw unsupported()
+  }
+  // A maintenance-only host refuses the rest at the RPC method too; refuse here first so no
+  // call is made and `--force` is never sent to a host that registered no action for it.
+  if (!full && (!MAINTENANCE_METHODS.has(method) || params.force === true)) {
+    throw maintenanceOnly(method, params)
   }
   const readOnly = READ_ONLY_METHODS.has(method)
   try {
@@ -47,6 +74,10 @@ async function callManagedServer<TResult>(
   } catch (error) {
     if (error instanceof RuntimeClientError && error.code === 'method_not_found') {
       throw unsupported()
+    }
+    // The host registered no action for this method (maintenance subset): the same refusal.
+    if (error instanceof RuntimeClientError && error.code === MANAGED_SERVER_ACTION_UNAVAILABLE_CODE) {
+      throw maintenanceOnly(method, params)
     }
     // The runtime continues the action after this client times out.
     if (!readOnly && error instanceof RuntimeClientError && error.code === 'runtime_timeout') {

@@ -102,7 +102,7 @@ export const ORCHESTRATION_COMMAND_SPECS: CommandSpec[] = [
       ...GLOBAL_FLAGS,
       'terminal',
       'run',
-      'ack',
+      'ack', 'expected-dispatch', 'durable',
       'unread',
       'peek',
       'all',

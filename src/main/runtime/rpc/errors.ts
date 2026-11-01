@@ -33,6 +33,7 @@ import { GIT_DIFF_TOO_LARGE_CODE } from '../../../shared/git-diff-transport-budg
 import { AUTOMATION_OWNER_CONFLICT_CODES } from '../../../shared/automation-owner-conflict'
 import { ARCHIVE_HOOK_FAILED_REMOVAL_CODE } from '../../../shared/worktree/archive-hook-removal-gate'
 import { NESTED_WORKER_DEPTH_EXCEEDED_CODE } from '../../../shared/nested-worker-depth'
+import { MANAGED_SERVER_ACTION_UNAVAILABLE_CODE } from '../../../shared/host-runtime-capabilities'
 import { PROJECT_RUNTIME_REPAIR_REQUIRED_CODE } from '../../../shared/project-runtime-repair-message'
 import { WORKTREE_CREATE_COLLISION_CODE } from '../../../shared/new-workspace/worktree-create-collision'
 import { AGENT_LAUNCH_PANE_ALREADY_LIVE_CODE } from '../../../shared/agent-launch-pane-already-live'
@@ -112,6 +113,8 @@ const LINEAR_PASSTHROUGH_CODES: ReadonlySet<string> = new Set(LINEAR_ERROR_CODES
 const STRUCTURED_RUNTIME_PASSTHROUGH_CODES: ReadonlySet<string> = new Set([
   WORKTREE_CREATE_COLLISION_CODE,
   AGENT_LAUNCH_SURFACE_UNAVAILABLE_CODE,
+  // A managedServer method this host registered no action for (headless maintenance subset).
+  MANAGED_SERVER_ACTION_UNAVAILABLE_CODE,
   'worktree_id_requires_full_path',
   'run_not_found',
   'run_home_unreachable',

@@ -31,6 +31,7 @@ export const CheckParams = z
   .object({
     terminal: OptionalString,
     terminalPaneKey: OptionalString,
+    expectedDispatchId: OptionalString,
     unread: OptionalBoolean,
     peek: OptionalBoolean,
     // Why: `all` surfaces every message and skips mark-read; legacy encoding was the `{unread: false}` trick (design doc §3.2/§3.3).
@@ -61,6 +62,15 @@ export const CheckParams = z
       })
     }
   })
+
+export const DurableCheckParams = CheckParams.superRefine((params, ctx) => {
+  const run = typeof params.run === 'string' && params.run.trim().length > 0
+  const dispatch = typeof params.expectedDispatchId === 'string' && params.expectedDispatchId.trim().length > 0
+  if (run === dispatch || params.compatibilityAck !== undefined || params.compatibilityQuestionAck !== undefined ||
+      (params.run !== undefined && !run) || (params.expectedDispatchId !== undefined && !dispatch)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Durable check requires exactly one explicit Run or expected Dispatch and no compatibility ACK.' })
+  }
+})
 
 export const ReplyParams = z.object({
   id: requiredString('Missing --id'),

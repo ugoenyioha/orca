@@ -1,6 +1,6 @@
 import { defineMethod } from '../../../core'
 import { OrchestrationError } from '../../../../orchestration/orchestration-error'
-import { CheckParams } from '../schemas'
+import { CheckParams, DurableCheckParams } from '../schemas'
 import { parseMessageTypes } from '../routing'
 import { checkRunMailbox } from './check-run'
 import { checkWorkerMailbox } from './check-worker'
@@ -14,8 +14,7 @@ import {
   isSupersededDispatch
 } from './dispatch-mailbox-fence'
 
-export const ORCHESTRATION_CHECK_METHODS = [
-  defineMethod({
+const checkMethod = defineMethod({
     name: 'orchestration.check',
     permission: 'workspace',
     params: CheckParams,
@@ -43,6 +42,18 @@ export const ORCHESTRATION_CHECK_METHODS = [
       })
       const paneKey = caller.paneKey ?? undefined
       const boundRun = hasRunBindingKey(caller) ? db.getCurrentRunForCoordinator(caller) : undefined
+      const activeDispatch = db.getActiveDispatchForIdentity(handle, paneKey)
+      const remoteAttachment =
+        !activeDispatch && paneKey ? db.findActiveRemoteAttachmentForPane(paneKey) : undefined
+      if (params.expectedDispatchId !== undefined) {
+        if (
+          params.run ||
+          boundRun ||
+          (activeDispatch?.id ?? remoteAttachment?.dispatch_id) !== params.expectedDispatchId
+        ) {
+          throw dispatchFenced()
+        }
+      }
       if (params.run || boundRun) {
         return checkRunMailbox({
           params,
@@ -60,13 +71,10 @@ export const ORCHESTRATION_CHECK_METHODS = [
         })
       }
 
-      const activeDispatch = db.getActiveDispatchForIdentity(handle, paneKey)
       // Why: reading another pane's Dispatch mail is wrong in every mode, so peek is fenced too.
       if (activeDispatch && !callerHoldsDispatchPane(activeDispatch, paneKey)) {
         throw dispatchFenced()
       }
-      const remoteAttachment =
-        !activeDispatch && paneKey ? db.findActiveRemoteAttachmentForPane(paneKey) : undefined
       if (
         remoteAttachment &&
         !db.isRemoteAttachmentProcessCurrent({
@@ -114,4 +122,10 @@ export const ORCHESTRATION_CHECK_METHODS = [
       return checkDirectMailbox({ params, runtime, db, handle, typeFilter, signal })
     }
   })
-]
+
+export const ORCHESTRATION_CHECK_METHODS = [checkMethod, defineMethod({
+  name: 'orchestration.checkDurable',
+  permission: 'workspace',
+  params: DurableCheckParams,
+  handler: checkMethod.handler
+})]

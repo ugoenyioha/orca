@@ -8,6 +8,13 @@ import { SSH_TARGET_MANAGEMENT_RUNTIME_CAPABILITY } from './ssh-target-managemen
 export const REMOTE_RUNTIME_SHARED_CONTROL_CAPABILITY = 'remote-runtime.shared-control.v1' as const
 // Why conditional: only a desktop runtime holds the SSH registry managed servers are run from.
 export const MANAGED_SERVER_RUNTIME_CAPABILITY = 'managedServer.v1' as const
+// Why separate: a headless `orca serve` loads its SSH registry too, but registers only the
+// read-and-roll-forward subset; decommission, rollback, recovery and force stay desktop-only. A
+// client must not read this as the full suite; `managedServer.v1` implies it, never the reverse.
+export const MANAGED_SERVER_MAINTENANCE_RUNTIME_CAPABILITY =
+  'aiForge.managedServer.maintenance.v1' as const
+// Stable refusal for a managedServer method this host registered no action for.
+export const MANAGED_SERVER_ACTION_UNAVAILABLE_CODE = 'managed_server_action_unavailable' as const
 // Why: clients offer "Resume automatic restores" only on hosts that can clear a recorded pause.
 export const RUNTIME_AUTOMATIC_WORK_RUNTIME_CAPABILITY = 'runtime.automatic-work.v1' as const
 // Hosts without this capability ignore a request's expectedRuntimeSource; the CLI's pre-send probe
